@@ -53,6 +53,20 @@ impl Hgrid {
         self.nodes.y()
     }
 
+    pub fn depths(&self) -> Array1<f64> {
+        let node_hashmap = self.nodes.hash_map();
+
+        let depths: Vec<f64> = node_hashmap
+            .values()
+            .filter_map(|(_feats, depth_opt)| {
+                depth_opt
+                    .as_ref()
+                    .and_then(|depths| depths.first().copied())
+            })
+            .collect();
+
+        depths.into()
+    }
     pub fn xy(&self) -> Array2<f64> {
         self.nodes.xy()
     }
@@ -159,7 +173,10 @@ impl TryFrom<&Gr3ParserOutput> for Hgrid {
             .crs(parsed_gr3.crs())
             .build()
             .map(Arc::new)?;
-        let elements = ElementsBuilder::default().nodes(nodes.clone()).build()?;
+        let elements = ElementsBuilder::default()
+            .nodes(nodes.clone())
+            .hash_map(parsed_gr3.elements())
+            .build()?;
         let description = parsed_gr3.description();
         let is_open_boundary_present = parsed_gr3.open_boundaries().is_some()
             && parsed_gr3
