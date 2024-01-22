@@ -1,47 +1,44 @@
 use derive_builder::Builder;
-use thiserror::Error;
+use log;
 use proj::Proj;
+use std::collections::BTreeMap;
 use std::fmt;
 use std::fs::File;
-use log;
-use url::Url;
-use std::collections::HashMap;
 use std::io::{prelude::*, BufReader};
 use std::path::Path;
-use tempfile::NamedTempFile;
 use std::sync::Arc;
+use tempfile::NamedTempFile;
+use thiserror::Error;
+use url::Url;
 
 #[derive(Builder, Default, Debug)]
 #[builder(setter(into))]
 pub struct Gr3ParserOutput {
     description: Option<String>,
     crs: Option<Arc<Proj>>,
-    nodes: HashMap<u32, (Vec<f64>, Option<Vec<f64>>)>,
-    elements: HashMap<u32, Vec<u32>>, // elements
+    nodes: BTreeMap<u32, (Vec<f64>, Option<Vec<f64>>)>,
+    elements: BTreeMap<u32, Vec<u32>>, // elements
     open_boundaries: Option<Vec<Vec<u32>>>,
     land_boundaries: Option<Vec<Vec<u32>>>,
     interior_boundaries: Option<Vec<Vec<u32>>>,
 }
 
 impl Gr3ParserOutput {
-
-    pub fn nodes(&self) -> HashMap<u32, (Vec<f64>, Option<Vec<f64>>)> {
+    pub fn nodes(&self) -> BTreeMap<u32, (Vec<f64>, Option<Vec<f64>>)> {
         self.nodes.clone()
     }
 
-    pub fn nodes_values_reversed_sign(&self) -> HashMap<u32, (Vec<f64>, Option<Vec<f64>>)> {
-        let mut new_nodes = HashMap::<u32, (Vec<f64>, Option<Vec<f64>>)>::new();
+    pub fn nodes_values_reversed_sign(&self) -> BTreeMap<u32, (Vec<f64>, Option<Vec<f64>>)> {
+        let mut new_nodes = BTreeMap::<u32, (Vec<f64>, Option<Vec<f64>>)>::new();
         for (&node_id, (coord, value)) in self.nodes.iter() {
-            let reversed_value = value.as_ref().map(|v| {
-                v.iter().map(|&x| -x).collect()
-            });
+            let reversed_value = value.as_ref().map(|v| v.iter().map(|&x| -x).collect());
 
             new_nodes.insert(node_id, (coord.clone(), reversed_value));
         }
         new_nodes
     }
 
-    pub fn elements(&self) -> HashMap<u32, Vec<u32>> {
+    pub fn elements(&self) -> BTreeMap<u32, Vec<u32>> {
         self.elements.clone()
     }
     pub fn crs(&self) -> Option<Arc<Proj>> {
@@ -51,15 +48,15 @@ impl Gr3ParserOutput {
         self.description.clone()
     }
 
-    pub fn open_boundaries(&self) ->Option<Vec<Vec<u32>>> {
+    pub fn open_boundaries(&self) -> Option<Vec<Vec<u32>>> {
         self.open_boundaries.clone()
     }
 
-    pub fn land_boundaries(&self) ->Option<Vec<Vec<u32>>> {
+    pub fn land_boundaries(&self) -> Option<Vec<Vec<u32>>> {
         self.land_boundaries.clone()
     }
 
-    pub fn interior_boundaries(&self) ->Option<Vec<Vec<u32>>> {
+    pub fn interior_boundaries(&self) -> Option<Vec<Vec<u32>>> {
         self.interior_boundaries.clone()
     }
 
@@ -68,13 +65,14 @@ impl Gr3ParserOutput {
         lines.push(self.description().unwrap_or("".to_owned()));
         lines.join("\n")
     }
-
 }
 
 impl fmt::Display for Gr3ParserOutput {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut lines = Vec::new();
-        let crs_str: String = self.crs.as_ref()
+        let crs_str: String = self
+            .crs
+            .as_ref()
             .map(|proj| proj.proj_info().definition.clone().unwrap_or_default())
             .unwrap_or_default();
 
@@ -91,50 +89,75 @@ impl fmt::Display for Gr3ParserOutput {
         };
 
         lines.push(format!("{} {}", self.elements.len(), self.nodes.len()));
-        let mut fort_index_from_node_id = HashMap::new();
+        let mut fort_index_from_node_id = BTreeMap::new();
         for (local_index, (&node_id, (coord, value))) in self.nodes.iter().enumerate() {
             let fortran_index = local_index + 1;
             fort_index_from_node_id.insert(node_id, fortran_index);
             let value_str = match value {
-                Some(v) => v.iter().map(|f| f.to_string()).collect::<Vec<String>>().join(" "),
+                Some(v) => v
+                    .iter()
+                    .map(|f| f.to_string())
+                    .collect::<Vec<String>>()
+                    .join(" "),
                 None => "-99999.".to_string(),
             };
-            
-            lines.push(format!("{} {} {} {}", fortran_index, coord[0], coord[1], value_str));
+
+            lines.push(format!(
+                "{} {} {} {}",
+                fortran_index, coord[0], coord[1], value_str
+            ));
         }
 
         for (local_index, (_element_id, element_indices)) in self.elements.iter().enumerate() {
             let fortran_index = local_index + 1;
-            
+
             // Translate element node indices to their corresponding Fortran indices and build the element_str
-            let element_str = element_indices.iter()
+            let element_str = element_indices
+                .iter()
                 .map(|&element_index| {
-                    fort_index_from_node_id.get(&element_index).expect("Expected node ID in map").to_string()
+                    fort_index_from_node_id
+                        .get(&element_index)
+                        .expect("Expected node ID in map")
+                        .to_string()
                 })
                 .collect::<Vec<String>>()
                 .join(" ");
 
-            lines.push(format!("{} {} {}", fortran_index, element_indices.len(), element_str));
+            lines.push(format!(
+                "{} {} {}",
+                fortran_index,
+                element_indices.len(),
+                element_str
+            ));
         }
         if self.open_boundaries.is_some()
             || self.land_boundaries.is_some()
-            || self.interior_boundaries.is_some() {
+            || self.interior_boundaries.is_some()
+        {
             // Handle open_boundaries if it's Some
             if let Some(open) = &self.open_boundaries {
                 lines.push(format!("{} ! total number of open boundaries", open.len()));
                 let mut total_number_of_open_boundary_nodes = 0;
                 for this_open_bound in open.iter() {
                     total_number_of_open_boundary_nodes += this_open_bound.len();
-                };
-                lines.push(format!("{} ! total number of open boundary nodes", total_number_of_open_boundary_nodes));
+                }
+                lines.push(format!(
+                    "{} ! total number of open boundary nodes",
+                    total_number_of_open_boundary_nodes
+                ));
                 for (local_index, this_open_bound) in open.iter().enumerate() {
                     let fortran_index = local_index + 1;
-                    lines.push(format!("{} ! number of nodes for ocean_boundary_{}", this_open_bound.len(), fortran_index));
+                    lines.push(format!(
+                        "{} ! number of nodes for ocean_boundary_{}",
+                        this_open_bound.len(),
+                        fortran_index
+                    ));
                     for this_open_bound_index in this_open_bound.iter() {
-                        let this_open_bound_fortran_index = fort_index_from_node_id[this_open_bound_index];
+                        let this_open_bound_fortran_index =
+                            fort_index_from_node_id[this_open_bound_index];
                         lines.push(format!("{}", this_open_bound_fortran_index));
                     }
-                };
+                }
             } else {
                 lines.push("0 ! total number of open boundaries".to_owned());
                 lines.push("0 ! total number of open boundary nodes".to_owned());
@@ -156,30 +179,46 @@ impl fmt::Display for Gr3ParserOutput {
                     total_number_of_non_ocean_boundaries += interior_bnd.len();
                 }
             }
-            lines.push(format!("{} ! total number of non-ocean boundaries", total_number_of_non_ocean_boundaries));
-            lines.push(format!("{} ! total number of non-ocean boundaries nodes", total_number_of_non_ocean_boundaries_nodes));
+            lines.push(format!(
+                "{} ! total number of non-ocean boundaries",
+                total_number_of_non_ocean_boundaries
+            ));
+            lines.push(format!(
+                "{} ! total number of non-ocean boundaries nodes",
+                total_number_of_non_ocean_boundaries_nodes
+            ));
 
             if let Some(land) = &self.land_boundaries {
                 for (local_index, this_land_bound) in land.iter().enumerate() {
                     let fortran_index = local_index + 1;
-                    lines.push(format!("{} ! number of nodes for land_boundary_{}", this_land_bound.len(), fortran_index));
+                    lines.push(format!(
+                        "{} ! number of nodes for land_boundary_{}",
+                        this_land_bound.len(),
+                        fortran_index
+                    ));
                     for this_land_bound_index in this_land_bound.iter() {
-                        let this_land_bound_fortran_index = fort_index_from_node_id[this_land_bound_index];
+                        let this_land_bound_fortran_index =
+                            fort_index_from_node_id[this_land_bound_index];
                         lines.push(format!("{}", this_land_bound_fortran_index));
                     }
-                };
+                }
             };
 
             if let Some(interior) = &self.interior_boundaries {
                 for (local_index, this_interior_bound) in interior.iter().enumerate() {
                     let fortran_index = local_index + 1;
-                    lines.push(format!("{} ! number of nodes for interior_boundary_{}", this_interior_bound.len(), fortran_index));
+                    lines.push(format!(
+                        "{} ! number of nodes for interior_boundary_{}",
+                        this_interior_bound.len(),
+                        fortran_index
+                    ));
                     for this_interior_bound_index in this_interior_bound.iter() {
-                        let this_interior_bound_fortran_index = fort_index_from_node_id[this_interior_bound_index];
+                        let this_interior_bound_fortran_index =
+                            fort_index_from_node_id[this_interior_bound_index];
                         lines.push(format!("{}", this_interior_bound_fortran_index));
                     }
-                };
-            }            
+                }
+            }
         }
         write!(f, "{}", lines.join("\n"))
     }
@@ -201,15 +240,9 @@ pub enum Gr3ParserError {
 
     #[error(transparent)]
     Gr3ParserOutputBuilderError(#[from] Gr3ParserOutputBuilderError),
-
 }
 
-pub fn parse_from_path_ref(
-    path: &Path,
-) -> Result<
-    Gr3ParserOutput,
-    Gr3ParserError,
-> {
+pub fn parse_from_path_ref(path: &Path) -> Result<Gr3ParserOutput, Gr3ParserError> {
     let fname = &path.display().to_string();
     let file = match File::open(&fname) {
         Ok(file) => file,
@@ -224,17 +257,13 @@ pub fn parse_from_path_ref(
     parse_from_reader(reader, fname)
 }
 
-pub fn parse_from_url(url: &Url) -> Result<
-    Gr3ParserOutput,
-    Gr3ParserError,
-> {
-    let response = reqwest::blocking::get(url.to_string()).map_err(|err| {
-        Gr3ParserError::RequestFromUrlError(url.to_string(), err.to_string())
-    })?;
+pub fn parse_from_url(url: &Url) -> Result<Gr3ParserOutput, Gr3ParserError> {
+    let response = reqwest::blocking::get(url.to_string())
+        .map_err(|err| Gr3ParserError::RequestFromUrlError(url.to_string(), err.to_string()))?;
     // Read the response body as a String
-    let body = response.text().map_err(|err| {
-        Gr3ParserError::RequestFromUrlError(url.to_string(), err.to_string())
-    })?;
+    let body = response
+        .text()
+        .map_err(|err| Gr3ParserError::RequestFromUrlError(url.to_string(), err.to_string()))?;
     let reader = BufReader::new(body.as_bytes());
     parse_from_reader(reader, &url.to_string())
 }
@@ -255,7 +284,6 @@ fn get_proj_from_description(description: &str) -> Option<Proj> {
     None
 }
 
-
 pub fn get_description_without_proj(description: &str) -> String {
     if Proj::new(description).is_ok() {
         return String::new();
@@ -271,15 +299,10 @@ pub fn get_description_without_proj(description: &str) -> String {
     description.to_string() // If no Proj found, return the original description.
 }
 
-
-
 fn parse_from_reader<R: Read>(
     reader: BufReader<R>,
-    fname: &str  // Passed separately for error messages
-) -> Result<
-    Gr3ParserOutput,
-    Gr3ParserError,
-> {
+    fname: &str, // Passed separately for error messages
+) -> Result<Gr3ParserOutput, Gr3ParserError> {
     let mut buf = reader.lines();
     let description_raw_str: String = match buf.next() {
         Some(Ok(line)) => line,
@@ -345,7 +368,7 @@ fn parse_from_reader<R: Read>(
             ));
         }
     };
-    let mut nodemap = HashMap::new();
+    let mut nodemap = BTreeMap::new();
     for _ in 0..np {
         let line = match buf.next() {
             Some(Ok(line)) => line,
@@ -453,7 +476,7 @@ fn parse_from_reader<R: Read>(
     }
     // let nodes = Nodes::new(nodemap, crs);
     log::info!("Start reading elements...");
-    let mut elemmap = HashMap::new();
+    let mut elemmap = BTreeMap::new();
     for _ in 0..ne {
         let line = match buf.next() {
             Some(Ok(line)) => line,
@@ -489,7 +512,7 @@ fn parse_from_reader<R: Read>(
                 },
                 None => {
                     return Err(
-                        Gr3ParserError::LineReadError(fname.to_string(), 
+                        Gr3ParserError::LineReadError(fname.to_string(),
                         format!("Expected line {} to contain element data but found an empty line.", elemmap.len() + 1)
                             )
                         )
@@ -559,8 +582,8 @@ fn parse_from_reader<R: Read>(
             parsed_gr3_builder.description(description);
             parsed_gr3_builder.nodes(nodemap);
             if !elemmap.is_empty() {
-                    parsed_gr3_builder.elements(elemmap);
-                }
+                parsed_gr3_builder.elements(elemmap);
+            }
             return Ok(parsed_gr3_builder.build()?);
         }
     };
@@ -624,7 +647,7 @@ fn parse_from_reader<R: Read>(
                 )
         }
     };
-    let mut open_boundaries_vec = Vec::<Vec::<u32>>::new();
+    let mut open_boundaries_vec = Vec::<Vec<u32>>::new();
     for _ in 0..number_of_open_boundaries {
         let line = match buf.next() {
             Some(Ok(line)) => line,
@@ -635,11 +658,14 @@ fn parse_from_reader<R: Read>(
                 ));
             }
             None => {
-                return Err(
-                    Gr3ParserError::LineReadError(fname.to_string(), 
-                    format!("Expected {} lines with open boundary data but found only {}.", number_of_open_boundaries, open_boundaries_vec.len())
-                        )
-                    )
+                return Err(Gr3ParserError::LineReadError(
+                    fname.to_string(),
+                    format!(
+                        "Expected {} lines with open boundary data but found only {}.",
+                        number_of_open_boundaries,
+                        open_boundaries_vec.len()
+                    ),
+                ))
             }
         };
         let mut line = line.split_whitespace();
@@ -649,7 +675,7 @@ fn parse_from_reader<R: Read>(
                 Err(_) => {
                     return Err(
                         Gr3ParserError::LineReadError(
-                            fname.to_string(), 
+                            fname.to_string(),
                             format!("Expected first item in line {} (number of nodes for this boundary) to be castable to an u32 but found {}.", open_boundaries_vec.len() + 1, number_of_nodes_for_this_boundary_str)
                             )
                         )
@@ -658,7 +684,7 @@ fn parse_from_reader<R: Read>(
             None => {
                 return Err(
                         Gr3ParserError::LineReadError(
-                            fname.to_string(), 
+                            fname.to_string(),
                             format!("Expected line {} to contain open boundary data but found an empty line.", open_boundaries_vec.len() + 1)
                             )
                         )
@@ -673,7 +699,7 @@ fn parse_from_reader<R: Read>(
                         Err(_) => {
                             return Err(
                         Gr3ParserError::LineReadError(
-                            fname.to_string(), 
+                            fname.to_string(),
                             format!("Expected item in line {} (open boundary node id) to be castable to an u32 but found {}.", open_boundaries_vec.len() + 1, line),
                             )
                                 )
@@ -708,7 +734,7 @@ fn parse_from_reader<R: Read>(
             boundary_vec.push(line);
         }
         open_boundaries_vec.push(boundary_vec);
-    };
+    }
     // parse land boundaries
     let line = match buf.next() {
             Some(Ok(line)) => line,
@@ -783,24 +809,27 @@ fn parse_from_reader<R: Read>(
                 )
         }
     };
-    let mut land_boundaries_vec = Vec::<Vec::<u32>>::new();
-    let mut interior_boundaries_vec = Vec::<Vec::<u32>>::new();
+    let mut land_boundaries_vec = Vec::<Vec<u32>>::new();
+    let mut interior_boundaries_vec = Vec::<Vec<u32>>::new();
     for _ in 0..number_of_land_boundaries {
-
         let line = match buf.next() {
-                Some(Ok(line)) => line,
-                Some(Err(e)) => {
-                    return Err(Gr3ParserError::LineReadError(
-                        fname.to_string(),
-                        e.to_string(),
-                    ));
-                }
-                None => {
-                    return Err(Gr3ParserError::LineReadError(
-                        fname.to_string(),
-                        format!("Expected {} lines with land boundary data but found only {}.", number_of_land_boundaries, land_boundaries_vec.len())
-                    ))
-                }
+            Some(Ok(line)) => line,
+            Some(Err(e)) => {
+                return Err(Gr3ParserError::LineReadError(
+                    fname.to_string(),
+                    e.to_string(),
+                ));
+            }
+            None => {
+                return Err(Gr3ParserError::LineReadError(
+                    fname.to_string(),
+                    format!(
+                        "Expected {} lines with land boundary data but found only {}.",
+                        number_of_land_boundaries,
+                        land_boundaries_vec.len()
+                    ),
+                ))
+            }
         };
         let mut split_line = line.split_whitespace();
 
@@ -832,27 +861,29 @@ fn parse_from_reader<R: Read>(
             ))
         };
 
-
         let mut this_boundary_vec = Vec::<u32>::new();
         for _ in 0..number_of_nodes_for_this_boundary {
-
             let line = match buf.next() {
-                    Some(Ok(line)) => line,
-                    Some(Err(e)) => {
-                        return Err(Gr3ParserError::LineReadError(
-                            fname.to_string(),
-                            e.to_string(),
-                        ));
-                    }
-                    None => {
-                        return Err(Gr3ParserError::LineReadError(
-                            fname.to_string(),
-                            format!("Expected {} lines with land boundary data but found only {}.", number_of_land_boundaries, land_boundaries_vec.len())
-                        ))
-                    }
+                Some(Ok(line)) => line,
+                Some(Err(e)) => {
+                    return Err(Gr3ParserError::LineReadError(
+                        fname.to_string(),
+                        e.to_string(),
+                    ));
+                }
+                None => {
+                    return Err(Gr3ParserError::LineReadError(
+                        fname.to_string(),
+                        format!(
+                            "Expected {} lines with land boundary data but found only {}.",
+                            number_of_land_boundaries,
+                            land_boundaries_vec.len()
+                        ),
+                    ))
+                }
             };
             let mut split_line = line.split_whitespace();
-                let node_id = match split_line.next() {
+            let node_id = match split_line.next() {
                     Some(value) => match value.parse::<u32>() {
                         Ok(value) => value,
                         Err(_) => return Err(Gr3ParserError::LineReadError(
@@ -875,9 +906,9 @@ fn parse_from_reader<R: Read>(
             return Err(Gr3ParserError::LineReadError(
                 fname.to_string(),
                 format!("Error reading gr3 file: {}. Expected boundary_id_type to be 0 or 1 but found {}.", fname, boundary_id_type)
-            ))
+            ));
         }
-    };
+    }
 
     let mut parsed_gr3_builder = Gr3ParserOutputBuilder::default();
     parsed_gr3_builder.description(description);
@@ -891,7 +922,6 @@ fn parse_from_reader<R: Read>(
     if !open_boundaries_vec.is_empty() {
         parsed_gr3_builder.open_boundaries(open_boundaries_vec);
     }
-
 
     if !land_boundaries_vec.is_empty() {
         parsed_gr3_builder.land_boundaries(land_boundaries_vec);

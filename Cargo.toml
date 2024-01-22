@@ -1,6 +1,6 @@
 [package]
-name = "schismrs-mesh"
-description = "A Rust toolkit for the SCHISM ocean model - mesh component"
+name = "schismrs-hgrid"
+description = "A Rust toolkit for the SCHISM ocean model - hgrid component"
 version = "0.1.0"
 edition = "2021"
 build = "build.rs"
@@ -12,8 +12,8 @@ ndarray = "0.15.6"
 proj = { version = "0.27.2", features = ["reqwest"] }
 reqwest = { version = "0.11.23", features = ["blocking"] }
 tempfile = "3.9.0"
-thiserror = "1.0.48"
-tokio = { version = "1.29.1", features = ["full"] }
+thiserror = "1.0.56"
+tokio = { version = "1.35.1", features = ["full"] }
 url = "2.5.0"
 
 # [dev-dependencies]
@@ -22,5 +22,5 @@ url = "2.5.0"
 # tempfile = "3.6.0"
 
 [build-dependencies]
-vergen = { version = "8.2.4", features = ["build", "cargo", "git", "gitcl", "rustc", "si"] }
+vergen = { version = "8.2.6", features = ["build", "cargo", "git", "gitcl", "rustc", "si"] }
 

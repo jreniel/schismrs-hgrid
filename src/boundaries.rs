@@ -1,6 +1,6 @@
 use super::nodes::Nodes;
 use derive_builder::Builder;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 
 #[derive(Builder, Debug, Clone)]
@@ -20,7 +20,7 @@ impl OpenBoundariesBuilder {
     pub fn validate(&self) -> Result<(), OpenBoundariesBuilderError> {
         let node_hash_set: HashSet<u32> = self.nodes.as_ref().map_or(HashSet::new(), |nodes_arc| {
             let nodes = Arc::as_ref(nodes_arc);
-            nodes.hash_map().keys().cloned().collect()
+            nodes.btree_map().keys().cloned().collect()
         });
 
         let all_node_ids: HashSet<u32> =
@@ -51,7 +51,7 @@ impl LandBoundariesBuilder {
     pub fn validate(&self) -> Result<(), LandBoundariesBuilderError> {
         let node_hash_set: HashSet<u32> = self.nodes.as_ref().map_or(HashSet::new(), |nodes_arc| {
             let nodes = Arc::as_ref(nodes_arc);
-            nodes.hash_map().keys().cloned().collect()
+            nodes.btree_map().keys().cloned().collect()
         });
 
         let all_node_ids: HashSet<u32> =
@@ -88,7 +88,7 @@ impl InteriorBoundariesBuilder {
     pub fn validate(&self) -> Result<(), InteriorBoundariesBuilderError> {
         let node_hash_set: HashSet<u32> = self.nodes.as_ref().map_or(HashSet::new(), |nodes_arc| {
             let nodes = Arc::as_ref(nodes_arc);
-            nodes.hash_map().keys().cloned().collect()
+            nodes.btree_map().keys().cloned().collect()
         });
 
         let all_node_ids: HashSet<u32> =
@@ -122,26 +122,26 @@ pub struct Boundaries {
 }
 
 impl Boundaries {
-    pub fn to_boundary_type_map(&self) -> HashMap<BoundaryType, Vec<Vec<u32>>> {
-        let mut hash_map = HashMap::new();
+    pub fn to_boundary_type_map(&self) -> BTreeMap<BoundaryType, Vec<Vec<u32>>> {
+        let mut btree_map = BTreeMap::new();
 
         if let Some(ref open_boundary) = self.open {
-            hash_map.insert(BoundaryType::Open, open_boundary.nodes_ids());
+            btree_map.insert(BoundaryType::Open, open_boundary.nodes_ids());
         }
 
         if let Some(ref land_boundary) = self.land {
-            hash_map.insert(BoundaryType::Land, land_boundary.nodes_ids());
+            btree_map.insert(BoundaryType::Land, land_boundary.nodes_ids());
         }
 
         if let Some(ref interior_boundary) = self.interior {
-            hash_map.insert(BoundaryType::Interior, interior_boundary.nodes_ids());
+            btree_map.insert(BoundaryType::Interior, interior_boundary.nodes_ids());
         }
 
-        hash_map
+        btree_map
     }
 }
 
-#[derive(Hash, Eq, PartialEq, Debug)]
+#[derive(Hash, Eq, PartialEq, Debug, Ord, PartialOrd)]
 pub enum BoundaryType {
     Open,
     Land,
