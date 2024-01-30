@@ -8,8 +8,8 @@ use std::path::PathBuf;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let path = PathBuf::from("/path/to/my/mesh");
-    let hgrid = Hgrid::try_from(&path)?
-    let depths = hgrid.depths()?
+    let hgrid = Hgrid::try_from(&path)?;
+    let depths = hgrid.depths();
     dbg!(depths);
     Ok(())
 }
