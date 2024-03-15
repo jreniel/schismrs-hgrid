@@ -139,6 +139,9 @@ impl Boundaries {
 
         btree_map
     }
+    pub fn open(&self) -> Option<Vec<Vec<u32>>> {
+        self.open.as_ref().map(|boundary| boundary.nodes_ids())
+    }
 }
 
 #[derive(Hash, Eq, PartialEq, Debug, Ord, PartialOrd)]
