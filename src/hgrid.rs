@@ -12,7 +12,8 @@ use super::{
 use derive_builder::Builder;
 use ndarray::{Array1, Array2};
 use proj::Proj;
-use std::collections::BTreeMap;
+// use std::collections::BTreeMap;
+use linked_hash_map::LinkedHashMap;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -54,7 +55,7 @@ impl Hgrid {
     }
 
     pub fn depths(&self) -> Array1<f64> {
-        let node_hashmap = self.nodes.btree_map();
+        let node_hashmap = self.nodes.hash_map();
         let depths: Vec<f64> = node_hashmap
             .values()
             .filter_map(|(_feats, depth_opt)| {
@@ -78,9 +79,9 @@ impl Hgrid {
         let mut gr3_parser_output_builder = Gr3ParserOutputBuilder::default();
         gr3_parser_output_builder.description(self.description.clone());
         // since gr3 reverses hgrid values...
-        let reversed_nodes: BTreeMap<u32, (Vec<f64>, Option<Vec<f64>>)> = self
+        let reversed_nodes: LinkedHashMap<u32, (Vec<f64>, Option<Vec<f64>>)> = self
             .nodes
-            .btree_map()
+            .hash_map()
             .iter()
             .map(|(&node_id, (coord, value))| {
                 let reversed_value = value.as_ref().map(|v| v.iter().map(|&x| -x).collect());
@@ -88,7 +89,7 @@ impl Hgrid {
             })
             .collect();
         gr3_parser_output_builder.nodes(reversed_nodes);
-        gr3_parser_output_builder.elements(self.elements.btree_map().clone());
+        gr3_parser_output_builder.elements(self.elements.hash_map().clone());
         gr3_parser_output_builder.crs(self.crs().clone());
         if let Some(boundaries) = &self.boundaries {
             let the_type_map = boundaries.to_boundary_type_map();
@@ -107,7 +108,7 @@ impl Hgrid {
 
     pub fn get_number_of_elements_connected_to_each_node(&self) -> Array1<usize> {
         let mut counts = vec![0; self.nodes.len() + 1];
-        for (_element, node_ids) in self.elements.btree_map().iter() {
+        for (_element, node_ids) in self.elements.hash_map().iter() {
             for node_id in node_ids {
                 counts[*node_id as usize] += 1;
             }
@@ -168,13 +169,13 @@ impl TryFrom<&Gr3ParserOutput> for Hgrid {
 
     fn try_from(parsed_gr3: &Gr3ParserOutput) -> Result<Self, Self::Error> {
         let nodes = NodesBuilder::default()
-            .btree_map(parsed_gr3.nodes_values_reversed_sign())
+            .hash_map(parsed_gr3.nodes_values_reversed_sign())
             .crs(parsed_gr3.crs())
             .build()
             .map(Arc::new)?;
         let elements = ElementsBuilder::default()
             .nodes(nodes.clone())
-            .btree_map(parsed_gr3.elements())
+            .hash_map(parsed_gr3.elements())
             .build()?;
         let description = parsed_gr3.description();
         let is_open_boundary_present = parsed_gr3.open_boundaries().is_some()
@@ -282,7 +283,7 @@ mod tests {
 
         log::info!("Begin making nodes hash map.");
         let start = Instant::now();
-        let nodes_btree_map: BTreeMap<u32, (Vec<f64>, Option<Vec<f64>>)> = points
+        let nodes_hash_map: BTreeMap<u32, (Vec<f64>, Option<Vec<f64>>)> = points
             .iter()
             .enumerate()
             .map(|(index, point)| (index as u32, (vec![point.x, point.y], None)))
@@ -295,7 +296,7 @@ mod tests {
         log::info!("Begin making nodes struct.");
         let start = Instant::now();
         let nodes = NodesBuilder::default()
-            .btree_map(nodes_btree_map)
+            .hash_map(nodes_hash_map)
             .crs(transformer)
             .build()
             .map(Arc::new)
@@ -311,9 +312,9 @@ mod tests {
             "Triangulation of mock data took {:?} seconds.",
             start.elapsed()
         );
-        log::info!("Begin making Elements btree_map.");
+        log::info!("Begin making Elements hash_map.");
         let start = Instant::now();
-        let elements_btree_map: BTreeMap<u32, Vec<u32>> = triangulation
+        let elements_hash_map: BTreeMap<u32, Vec<u32>> = triangulation
             .triangles
             .chunks(3)
             .enumerate()
@@ -329,7 +330,7 @@ mod tests {
         log::info!("Begin making Elements object.");
         let start = Instant::now();
         let elements = ElementsBuilder::default()
-            .btree_map(elements_btree_map)
+            .hash_map(elements_hash_map)
             .nodes(nodes.clone())
             .build()
             .unwrap();

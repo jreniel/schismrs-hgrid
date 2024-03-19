@@ -1,21 +1,22 @@
 use super::nodes::Nodes;
 use derive_builder::Builder;
-use std::collections::{BTreeMap, HashSet};
+use linked_hash_map::LinkedHashMap;
+use std::collections::HashSet;
 use std::sync::Arc;
 // use thiserror::Error;
 
 #[derive(Builder, Debug, Clone)]
 #[builder(build_fn(validate = "Self::validate"))]
 pub struct Elements {
-    btree_map: BTreeMap<u32, Vec<u32>>,
+    hash_map: LinkedHashMap<u32, Vec<u32>>,
     nodes: Arc<Nodes>,
 }
 
 impl ElementsBuilder {
     pub fn validate(&self) -> Result<(), ElementsBuilderError> {
         let element_hash_set: HashSet<u32> =
-            self.btree_map.as_ref().map_or(HashSet::new(), |btree_map| {
-                btree_map
+            self.hash_map.as_ref().map_or(HashSet::new(), |hash_map| {
+                hash_map
                     .values()
                     .flat_map(|vec| vec.iter())
                     .cloned()
@@ -24,7 +25,7 @@ impl ElementsBuilder {
 
         let node_hash_set: HashSet<u32> = self.nodes.as_ref().map_or(HashSet::new(), |nodes_arc| {
             let nodes = Arc::as_ref(nodes_arc);
-            nodes.btree_map().keys().cloned().collect()
+            nodes.hash_map().keys().cloned().collect()
         });
 
         if !element_hash_set.is_subset(&node_hash_set) {
@@ -33,13 +34,13 @@ impl ElementsBuilder {
             ));
         }
 
-        if let Some(btree_map) = &self.btree_map {
-            let valid_lengths = btree_map
+        if let Some(hash_map) = &self.hash_map {
+            let valid_lengths = hash_map
                 .values()
                 .all(|vec| vec.len() == 3 || vec.len() == 4);
             if !valid_lengths {
                 return Err(ElementsBuilderError::ValidationError(
-                    "All members of btree_map must have a length of 3 or 4".to_string(),
+                    "All members of hash_map must have a length of 3 or 4".to_string(),
                 ));
             }
         }
@@ -49,8 +50,8 @@ impl ElementsBuilder {
 }
 
 impl Elements {
-    pub fn btree_map(&self) -> BTreeMap<u32, Vec<u32>> {
-        self.btree_map.clone()
+    pub fn hash_map(&self) -> &LinkedHashMap<u32, Vec<u32>> {
+        &self.hash_map
     }
 }
 

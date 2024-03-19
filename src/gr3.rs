@@ -1,7 +1,8 @@
 use derive_builder::Builder;
 use log;
 use proj::Proj;
-use std::collections::BTreeMap;
+// use std::collections::BTreeMap;
+use linked_hash_map::LinkedHashMap;
 use std::fmt;
 use std::fs::File;
 use std::io::{prelude::*, BufReader};
@@ -16,20 +17,20 @@ use url::Url;
 pub struct Gr3ParserOutput {
     description: Option<String>,
     crs: Option<Arc<Proj>>,
-    nodes: BTreeMap<u32, (Vec<f64>, Option<Vec<f64>>)>,
-    elements: BTreeMap<u32, Vec<u32>>, // elements
+    nodes: LinkedHashMap<u32, (Vec<f64>, Option<Vec<f64>>)>,
+    elements: LinkedHashMap<u32, Vec<u32>>, // elements
     open_boundaries: Option<Vec<Vec<u32>>>,
     land_boundaries: Option<Vec<Vec<u32>>>,
     interior_boundaries: Option<Vec<Vec<u32>>>,
 }
 
 impl Gr3ParserOutput {
-    pub fn nodes(&self) -> BTreeMap<u32, (Vec<f64>, Option<Vec<f64>>)> {
+    pub fn nodes(&self) -> LinkedHashMap<u32, (Vec<f64>, Option<Vec<f64>>)> {
         self.nodes.clone()
     }
 
-    pub fn nodes_values_reversed_sign(&self) -> BTreeMap<u32, (Vec<f64>, Option<Vec<f64>>)> {
-        let mut new_nodes = BTreeMap::<u32, (Vec<f64>, Option<Vec<f64>>)>::new();
+    pub fn nodes_values_reversed_sign(&self) -> LinkedHashMap<u32, (Vec<f64>, Option<Vec<f64>>)> {
+        let mut new_nodes = LinkedHashMap::<u32, (Vec<f64>, Option<Vec<f64>>)>::new();
         for (&node_id, (coord, value)) in self.nodes.iter() {
             let reversed_value = value.as_ref().map(|v| v.iter().map(|&x| -x).collect());
 
@@ -38,7 +39,7 @@ impl Gr3ParserOutput {
         new_nodes
     }
 
-    pub fn elements(&self) -> BTreeMap<u32, Vec<u32>> {
+    pub fn elements(&self) -> LinkedHashMap<u32, Vec<u32>> {
         self.elements.clone()
     }
     pub fn crs(&self) -> Option<Arc<Proj>> {
@@ -89,7 +90,7 @@ impl fmt::Display for Gr3ParserOutput {
         };
 
         lines.push(format!("{} {}", self.elements.len(), self.nodes.len()));
-        let mut fort_index_from_node_id = BTreeMap::new();
+        let mut fort_index_from_node_id = LinkedHashMap::new();
         for (local_index, (&node_id, (coord, value))) in self.nodes.iter().enumerate() {
             let fortran_index = local_index + 1;
             fort_index_from_node_id.insert(node_id, fortran_index);
@@ -368,7 +369,7 @@ fn parse_from_reader<R: Read>(
             ));
         }
     };
-    let mut nodemap = BTreeMap::new();
+    let mut nodemap = LinkedHashMap::new();
     for _ in 0..np {
         let line = match buf.next() {
             Some(Ok(line)) => line,
@@ -476,7 +477,7 @@ fn parse_from_reader<R: Read>(
     }
     // let nodes = Nodes::new(nodemap, crs);
     log::info!("Start reading elements...");
-    let mut elemmap = BTreeMap::new();
+    let mut elemmap = LinkedHashMap::new();
     for _ in 0..ne {
         let line = match buf.next() {
             Some(Ok(line)) => line,
