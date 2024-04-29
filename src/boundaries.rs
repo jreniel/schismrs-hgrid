@@ -15,6 +15,31 @@ impl OpenBoundaries {
     pub fn nodes_ids(&self) -> &Vec<Vec<u32>> {
         &self.nodes_ids
     }
+    pub fn iter(&self) -> OpenBoundariesIter {
+        OpenBoundariesIter {
+            outer: &self.nodes_ids,
+            current: 0,
+        }
+    }
+}
+
+pub struct OpenBoundariesIter<'a> {
+    outer: &'a Vec<Vec<u32>>,
+    current: usize,
+}
+
+impl<'a> Iterator for OpenBoundariesIter<'a> {
+    type Item = &'a Vec<u32>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.current < self.outer.len() {
+            let item = &self.outer[self.current];
+            self.current += 1;
+            Some(item)
+        } else {
+            None
+        }
+    }
 }
 
 impl OpenBoundariesBuilder {
