@@ -57,4 +57,10 @@ impl Nodes {
     //     let crs = Rc::new(crs.unwrap());
     //     self.crs = Some(crs);
     // }
+    pub fn get_node(&self, idx: u32) -> Option<(f64, f64)> {
+        self.hash_map.get(&idx).map(|(coords, _)| {
+            // Assuming coords[0] is longitude and coords[1] is latitude
+            (coords[0], coords[1])
+        })
+    }
 }

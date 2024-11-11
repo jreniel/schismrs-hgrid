@@ -53,6 +53,9 @@ impl Elements {
     pub fn hash_map(&self) -> &LinkedHashMap<u32, Vec<u32>> {
         &self.hash_map
     }
+    pub fn nodes(&self) -> &Nodes {
+        &self.nodes
+    }
 }
 
 // #[derive(Error, Debug, Clone)]
