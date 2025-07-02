@@ -175,7 +175,11 @@ impl TryFrom<&Gr3ParserOutput> for Hgrid {
             .map(Arc::new)?;
         let elements = ElementsBuilder::default()
             .nodes(nodes.clone())
-            .hash_map(parsed_gr3.elements())
+            .hash_map(
+                parsed_gr3
+                    .elements()
+                    .unwrap_or_else(|| LinkedHashMap::new()),
+            )
             .build()?;
         let description = parsed_gr3.description();
         let is_open_boundary_present = parsed_gr3.open_boundaries().is_some()

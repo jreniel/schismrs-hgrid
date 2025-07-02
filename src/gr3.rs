@@ -18,7 +18,7 @@ pub struct Gr3ParserOutput {
     description: Option<String>,
     crs: Option<Arc<Proj>>,
     nodes: LinkedHashMap<u32, (Vec<f64>, Option<Vec<f64>>)>,
-    elements: LinkedHashMap<u32, Vec<u32>>, // elements
+    elements: Option<LinkedHashMap<u32, Vec<u32>>>, // elements
     open_boundaries: Option<Vec<Vec<u32>>>,
     land_boundaries: Option<Vec<Vec<u32>>>,
     interior_boundaries: Option<Vec<Vec<u32>>>,
@@ -39,7 +39,7 @@ impl Gr3ParserOutput {
         new_nodes
     }
 
-    pub fn elements(&self) -> LinkedHashMap<u32, Vec<u32>> {
+    pub fn elements(&self) -> Option<LinkedHashMap<u32, Vec<u32>>> {
         self.elements.clone()
     }
     pub fn crs(&self) -> Option<Arc<Proj>> {
@@ -89,7 +89,12 @@ impl fmt::Display for Gr3ParserOutput {
             lines.push(format!("{} {}", crs_str, desc_str));
         };
 
-        lines.push(format!("{} {}", self.elements.len(), self.nodes.len()));
+        let ne = match &self.elements {
+            Some(elements) => elements.len(),
+            None => 0,
+        };
+
+        lines.push(format!("{} {}", ne, self.nodes.len()));
         let mut fort_index_from_node_id = LinkedHashMap::new();
         for (local_index, (&node_id, (coord, value))) in self.nodes.iter().enumerate() {
             let fortran_index = local_index + 1;
@@ -109,27 +114,31 @@ impl fmt::Display for Gr3ParserOutput {
             ));
         }
 
-        for (local_index, (_element_id, element_indices)) in self.elements.iter().enumerate() {
-            let fortran_index = local_index + 1;
+        if self.elements.is_some() {
+            if let Some(elements) = &self.elements {
+                for (local_index, (_element_id, element_indices)) in elements.iter().enumerate() {
+                    let fortran_index = local_index + 1;
 
-            // Translate element node indices to their corresponding Fortran indices and build the element_str
-            let element_str = element_indices
-                .iter()
-                .map(|&element_index| {
-                    fort_index_from_node_id
-                        .get(&element_index)
-                        .expect("Expected node ID in map")
-                        .to_string()
-                })
-                .collect::<Vec<String>>()
-                .join(" ");
+                    // Translate element node indices to their corresponding Fortran indices and build the element_str
+                    let element_str = element_indices
+                        .iter()
+                        .map(|&element_index| {
+                            fort_index_from_node_id
+                                .get(&element_index)
+                                .expect("Expected node ID in map")
+                                .to_string()
+                        })
+                        .collect::<Vec<String>>()
+                        .join(" ");
 
-            lines.push(format!(
-                "{} {} {}",
-                fortran_index,
-                element_indices.len(),
-                element_str
-            ));
+                    lines.push(format!(
+                        "{} {} {}",
+                        fortran_index,
+                        element_indices.len(),
+                        element_str
+                    ));
+                }
+            }
         }
         if self.open_boundaries.is_some()
             || self.land_boundaries.is_some()
@@ -300,7 +309,7 @@ pub fn get_description_without_proj(description: &str) -> String {
     description.to_string() // If no Proj found, return the original description.
 }
 
-fn parse_from_reader<R: Read>(
+pub fn parse_from_reader<R: Read>(
     reader: BufReader<R>,
     fname: &str, // Passed separately for error messages
 ) -> Result<Gr3ParserOutput, Gr3ParserError> {
@@ -916,20 +925,30 @@ fn parse_from_reader<R: Read>(
     parsed_gr3_builder.nodes(nodemap);
     parsed_gr3_builder.crs(crs);
 
+    // When using derive-builder, even Optional must be set explicitly.
+
     if !elemmap.is_empty() {
         parsed_gr3_builder.elements(elemmap);
+    } else {
+        parsed_gr3_builder.elements(None);
     }
 
     if !open_boundaries_vec.is_empty() {
         parsed_gr3_builder.open_boundaries(open_boundaries_vec);
+    } else {
+        parsed_gr3_builder.open_boundaries(None);
     }
 
     if !land_boundaries_vec.is_empty() {
         parsed_gr3_builder.land_boundaries(land_boundaries_vec);
+    } else {
+        parsed_gr3_builder.land_boundaries(None);
     }
 
     if !interior_boundaries_vec.is_empty() {
         parsed_gr3_builder.interior_boundaries(interior_boundaries_vec);
+    } else {
+        parsed_gr3_builder.interior_boundaries(None);
     }
     log::debug!("Done with parsing full file!");
     Ok(parsed_gr3_builder.build()?)
