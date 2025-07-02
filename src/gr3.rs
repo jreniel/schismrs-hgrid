@@ -1,8 +1,7 @@
 use derive_builder::Builder;
+use linked_hash_map::LinkedHashMap;
 use log;
 use proj::Proj;
-// use std::collections::BTreeMap;
-use linked_hash_map::LinkedHashMap;
 use std::fmt;
 use std::fs::File;
 use std::io::{prelude::*, BufReader};
@@ -18,7 +17,7 @@ pub struct Gr3ParserOutput {
     description: Option<String>,
     crs: Option<Arc<Proj>>,
     nodes: LinkedHashMap<u32, (Vec<f64>, Option<Vec<f64>>)>,
-    elements: Option<LinkedHashMap<u32, Vec<u32>>>, // elements
+    elements: Option<LinkedHashMap<u32, Vec<u32>>>,
     open_boundaries: Option<Vec<Vec<u32>>>,
     land_boundaries: Option<Vec<Vec<u32>>>,
     interior_boundaries: Option<Vec<Vec<u32>>>,
@@ -294,19 +293,24 @@ fn get_proj_from_description(description: &str) -> Option<Proj> {
     None
 }
 
+// More idiomatic version using iterator methods
 pub fn get_description_without_proj(description: &str) -> String {
+    // Early return if the full description is a valid PROJ string
     if Proj::new(description).is_ok() {
         return String::new();
     }
 
     let words: Vec<&str> = description.split_whitespace().collect();
-    for i in 0..words.len() {
+
+    // Find the first index where the substring from that point is a valid PROJ string
+    if let Some(split_index) = (0..words.len()).find(|&i| {
         let substr = words[i..].join(" ");
-        if Proj::new(&substr).is_ok() {
-            return words[0..i].join(" ");
-        }
+        Proj::new(&substr).is_ok()
+    }) {
+        words[0..split_index].join(" ")
+    } else {
+        description.to_string()
     }
-    description.to_string() // If no Proj found, return the original description.
 }
 
 pub fn parse_from_reader<R: Read>(
@@ -960,4 +964,236 @@ pub fn write_to_path(path: &Path, gr3: &Gr3ParserOutput) -> std::io::Result<()> 
     writeln!(tmpfile, "{}", gr3)?;
     tmpfile.persist(path)?;
     Ok(())
+}
+
+impl Gr3ParserOutput {
+    /// Write the mesh data as a 2DM (SMS) format file
+    pub fn write_as_2dm(&self, path: &Path) -> std::io::Result<()> {
+        let mut tmpfile = NamedTempFile::new()?;
+        log::debug!("Will write 2DM to tmpfile: {:?}", tmpfile);
+        writeln!(tmpfile, "{}", self.to_2dm_string())?;
+        tmpfile.persist(path)?;
+        Ok(())
+    }
+
+    /// Convert the mesh data to 2DM format string
+    pub fn to_2dm_string(&self) -> String {
+        let mut output = String::new();
+
+        // Start with MESH2D header
+        output.push_str("MESH2D\n");
+
+        // Add triangular elements (E3T)
+        if let Some(elements) = &self.elements {
+            for (element_id, element_nodes) in elements.iter() {
+                if element_nodes.len() == 3 {
+                    output.push_str(&format!(
+                        "E3T {} {} {} {}\n",
+                        element_id, element_nodes[0], element_nodes[1], element_nodes[2]
+                    ));
+                }
+            }
+        }
+
+        // Add quadrilateral elements (E4Q)
+        if let Some(elements) = &self.elements {
+            for (element_id, element_nodes) in elements.iter() {
+                if element_nodes.len() == 4 {
+                    output.push_str(&format!(
+                        "E4Q {} {} {} {} {}\n",
+                        element_id,
+                        element_nodes[0],
+                        element_nodes[1],
+                        element_nodes[2],
+                        element_nodes[3]
+                    ));
+                }
+            }
+        }
+
+        // Add nodes (ND)
+        for (node_id, (coords, values)) in self.nodes.iter() {
+            let value = match values {
+                Some(v) if !v.is_empty() => v[0], // Use first value if available
+                _ => -99999.0,                    // Default value for missing data
+            };
+
+            output.push_str(&format!(
+                "ND {} {:<.16E} {:<.16E} {:<.16E}\n",
+                node_id, coords[0], coords[1], value
+            ));
+        }
+
+        // Add boundaries
+        output.push_str(&self.boundaries_to_2dm_string());
+
+        output
+    }
+
+    /// Convert boundaries to 2DM nodestring format
+    fn boundaries_to_2dm_string(&self) -> String {
+        let mut output = String::new();
+
+        // Process open boundaries
+        if let Some(open_boundaries) = &self.open_boundaries {
+            for boundary in open_boundaries.iter() {
+                if !boundary.is_empty() {
+                    output.push_str("NS ");
+                    for i in 0..(boundary.len() - 1) {
+                        output.push_str(&format!("{} ", boundary[i]));
+                    }
+                    output.push_str(&format!("-{}\n", boundary[boundary.len() - 1]));
+                }
+            }
+        }
+
+        // Process land boundaries
+        if let Some(land_boundaries) = &self.land_boundaries {
+            for boundary in land_boundaries.iter() {
+                if !boundary.is_empty() {
+                    output.push_str("NS ");
+                    for i in 0..(boundary.len() - 1) {
+                        output.push_str(&format!("{} ", boundary[i]));
+                    }
+                    output.push_str(&format!("-{}\n", boundary[boundary.len() - 1]));
+                }
+            }
+        }
+
+        // Process interior boundaries
+        if let Some(interior_boundaries) = &self.interior_boundaries {
+            for boundary in interior_boundaries.iter() {
+                if !boundary.is_empty() {
+                    output.push_str("NS ");
+                    for i in 0..(boundary.len() - 1) {
+                        output.push_str(&format!("{} ", boundary[i]));
+                    }
+                    output.push_str(&format!("-{}\n", boundary[boundary.len() - 1]));
+                }
+            }
+        }
+
+        output
+    }
+}
+
+#[cfg(test)]
+mod tests_2dm {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn test_2dm_string_generation() {
+        // Create a simple test mesh
+        let mut nodes = LinkedHashMap::new();
+        nodes.insert(1, (vec![0.0, 0.0], Some(vec![-10.5])));
+        nodes.insert(2, (vec![1.0, 0.0], Some(vec![-12.3])));
+        nodes.insert(3, (vec![0.5, 1.0], Some(vec![-15.7])));
+        nodes.insert(4, (vec![1.5, 1.0], Some(vec![-18.2])));
+
+        let mut elements = LinkedHashMap::new();
+        elements.insert(1, vec![1, 2, 3]); // Triangle
+        elements.insert(2, vec![2, 4, 3]); // Triangle
+
+        let open_boundaries = vec![vec![1, 2]];
+
+        let gr3 = Gr3ParserOutputBuilder::default()
+            .description("Test mesh".to_string())
+            .nodes(nodes)
+            .elements(elements)
+            .crs(Some(Arc::new(Proj::new("epsg:6933").unwrap())))
+            .open_boundaries(None)
+            .land_boundaries(None)
+            .interior_boundaries(None)
+            .open_boundaries(open_boundaries)
+            .build()
+            .expect("Failed to build test GR3");
+
+        let sms2dm_string = gr3.to_2dm_string();
+
+        // Verify the output contains expected components
+        assert!(sms2dm_string.contains("MESH2D"));
+        assert!(sms2dm_string.contains("E3T 1 1 2 3"));
+        assert!(sms2dm_string.contains("E3T 2 2 4 3"));
+        assert!(sms2dm_string.contains("ND 1"));
+        assert!(sms2dm_string.contains("NS 1 -2"));
+
+        println!("Generated 2DM string:\n{}", sms2dm_string);
+    }
+
+    #[test]
+    fn test_write_2dm_file() {
+        // Create a simple test mesh
+        let mut nodes = LinkedHashMap::new();
+        nodes.insert(1, (vec![0.0, 0.0], Some(vec![-10.5])));
+        nodes.insert(2, (vec![1.0, 0.0], Some(vec![-12.3])));
+        nodes.insert(3, (vec![0.5, 1.0], Some(vec![-15.7])));
+
+        let mut elements = LinkedHashMap::new();
+        elements.insert(1, vec![1, 2, 3]); // Triangle
+
+        let gr3 = Gr3ParserOutputBuilder::default()
+            .description("Test mesh".to_string())
+            .nodes(nodes)
+            .elements(elements)
+            .crs(Some(Arc::new(Proj::new("epsg:6933").unwrap())))
+            .open_boundaries(None)
+            .land_boundaries(None)
+            .interior_boundaries(None)
+            .build()
+            .expect("Failed to build test GR3");
+
+        // Create a temporary directory and file
+        let temp_dir = tempdir().expect("Failed to create temp dir");
+        let file_path = temp_dir.path().join("test_mesh.2dm");
+
+        // Write the 2DM file
+        let result = gr3.write_as_2dm(&file_path);
+        assert!(result.is_ok(), "Writing 2DM file should succeed");
+
+        // Verify the file exists and has content
+        assert!(file_path.exists(), "2DM file should exist");
+
+        let content =
+            std::fs::read_to_string(&file_path).expect("Should be able to read the 2DM file");
+        assert!(content.contains("MESH2D"));
+        assert!(content.contains("E3T"));
+        assert!(content.contains("ND"));
+
+        println!("2DM file written successfully to: {:?}", file_path);
+    }
+
+    #[test]
+    fn test_mixed_element_2dm() {
+        // Create a mesh with both triangles and quads
+        let mut nodes = LinkedHashMap::new();
+        for i in 1..=6 {
+            nodes.insert(i, (vec![i as f64, 0.0], Some(vec![-10.0 - i as f64])));
+        }
+
+        let mut elements = LinkedHashMap::new();
+        elements.insert(1, vec![1, 2, 3]); // Triangle
+        elements.insert(2, vec![2, 4, 5, 3]); // Quad
+        elements.insert(3, vec![4, 6, 5]); // Triangle
+
+        let gr3 = Gr3ParserOutputBuilder::default()
+            .description("Mixed element mesh".to_string())
+            .nodes(nodes)
+            .elements(elements)
+            .crs(Some(Arc::new(Proj::new("epsg:6933").unwrap())))
+            .open_boundaries(None)
+            .land_boundaries(None)
+            .interior_boundaries(None)
+            .build()
+            .expect("Failed to build test GR3");
+
+        let sms2dm_string = gr3.to_2dm_string();
+
+        // Verify both element types are present
+        assert!(sms2dm_string.contains("E3T 1 1 2 3"));
+        assert!(sms2dm_string.contains("E4Q 2 2 4 5 3"));
+        assert!(sms2dm_string.contains("E3T 3 4 6 5"));
+
+        println!("Mixed element 2DM string:\n{}", sms2dm_string);
+    }
 }

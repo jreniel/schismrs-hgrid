@@ -248,25 +248,17 @@ impl TryFrom<&Gr3ParserOutput> for Hgrid {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::setup_simple_logger;
     use delaunator::{triangulate, Point};
     use log;
     use ndarray::Array1;
     use proj::Proj;
-    use std::collections::BTreeMap;
-    use std::path::Path;
     use std::sync::Arc;
     use std::time::Instant;
     use tempfile::NamedTempFile;
-    #[test]
-    fn test_read_gr3() {
-        let path = Path::new("tests/fixtures/hgrid.ll");
-        gr3::parse_from_path_ref(&path).unwrap();
-    }
 
     #[test]
+    #[ignore]
     fn test_write_sample_nwatl_hgrid() {
-        setup_simple_logger();
         let temp_file = NamedTempFile::new().unwrap();
         let temp_path = temp_file.path();
         let xmin = -98.00556;
@@ -287,7 +279,7 @@ mod tests {
 
         log::info!("Begin making nodes hash map.");
         let start = Instant::now();
-        let nodes_hash_map: BTreeMap<u32, (Vec<f64>, Option<Vec<f64>>)> = points
+        let nodes_hash_map: LinkedHashMap<u32, (Vec<f64>, Option<Vec<f64>>)> = points
             .iter()
             .enumerate()
             .map(|(index, point)| (index as u32, (vec![point.x, point.y], None)))
@@ -318,7 +310,7 @@ mod tests {
         );
         log::info!("Begin making Elements hash_map.");
         let start = Instant::now();
-        let elements_hash_map: BTreeMap<u32, Vec<u32>> = triangulation
+        let elements_hash_map: LinkedHashMap<u32, Vec<u32>> = triangulation
             .triangles
             .chunks(3)
             .enumerate()

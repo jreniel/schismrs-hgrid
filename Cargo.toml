@@ -25,3 +25,6 @@ url = "2.5.0"
 [build-dependencies]
 vergen = { version = "8.2.6", features = ["build", "cargo", "git", "gitcl", "rustc", "si"] }
 
+[dev-dependencies]
+delaunator = "1.0.2"
+
