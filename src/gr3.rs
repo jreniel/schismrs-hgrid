@@ -7,6 +7,7 @@ use std::fs::File;
 use std::io::{prelude::*, BufReader};
 use std::path::Path;
 use std::sync::Arc;
+use tempfile::Builder;
 use tempfile::NamedTempFile;
 use thiserror::Error;
 use url::Url;
@@ -277,15 +278,32 @@ pub fn parse_from_url(url: &Url) -> Result<Gr3ParserOutput, Gr3ParserError> {
     parse_from_reader(reader, &url.to_string())
 }
 
+use gag::Gag;
+use std::sync::Mutex;
+
+// Global mutex to ensure only one thread redirects stderr at a time
+static STDERR_MUTEX: Mutex<()> = Mutex::new(());
+
+/// Safe wrapper around Proj::new() that silences stderr output
+fn proj_new_silent(definition: &str) -> Result<Proj, proj::ProjCreateError> {
+    let _guard = STDERR_MUTEX.lock().unwrap();
+
+    // Temporarily redirect stderr to nowhere
+    let _gag = Gag::stderr().ok();
+
+    // Call Proj::new() while stderr is silenced
+    Proj::new(definition)
+}
+
 fn get_proj_from_description(description: &str) -> Option<Proj> {
-    if let Ok(proj) = Proj::new(description) {
+    if let Ok(proj) = proj_new_silent(description) {
         return Some(proj);
     }
 
     let words: Vec<&str> = description.split_whitespace().collect();
     for i in 0..words.len() {
         let substr = words[i..].join(" ");
-        if let Ok(proj) = Proj::new(&substr) {
+        if let Ok(proj) = proj_new_silent(&substr) {
             return Some(proj);
         }
     }
@@ -293,10 +311,9 @@ fn get_proj_from_description(description: &str) -> Option<Proj> {
     None
 }
 
-// More idiomatic version using iterator methods
 pub fn get_description_without_proj(description: &str) -> String {
     // Early return if the full description is a valid PROJ string
-    if Proj::new(description).is_ok() {
+    if proj_new_silent(description).is_ok() {
         return String::new();
     }
 
@@ -305,7 +322,7 @@ pub fn get_description_without_proj(description: &str) -> String {
     // Find the first index where the substring from that point is a valid PROJ string
     if let Some(split_index) = (0..words.len()).find(|&i| {
         let substr = words[i..].join(" ");
-        Proj::new(&substr).is_ok()
+        proj_new_silent(&substr).is_ok()
     }) {
         words[0..split_index].join(" ")
     } else {
@@ -969,8 +986,13 @@ pub fn write_to_path(path: &Path, gr3: &Gr3ParserOutput) -> std::io::Result<()> 
 impl Gr3ParserOutput {
     /// Write the mesh data as a 2DM (SMS) format file
     pub fn write_as_2dm(&self, path: &Path) -> std::io::Result<()> {
-        let mut tmpfile = NamedTempFile::new()?;
-        log::debug!("Will write 2DM to tmpfile: {:?}", tmpfile);
+        let temp_dir = path.parent().unwrap_or_else(|| Path::new("."));
+
+        let mut tmpfile = Builder::new()
+            .prefix("mesh_")
+            .suffix(".2dm")
+            .tempfile_in(temp_dir)?;
+
         writeln!(tmpfile, "{}", self.to_2dm_string())?;
         tmpfile.persist(path)?;
         Ok(())
@@ -1011,7 +1033,7 @@ impl Gr3ParserOutput {
             }
         }
 
-        // Add nodes (ND)
+        // Add nodes (ND) with proper formatting
         for (node_id, (coords, values)) in self.nodes.iter() {
             let value = match values {
                 Some(v) if !v.is_empty() => v[0], // Use first value if available
@@ -1022,12 +1044,49 @@ impl Gr3ParserOutput {
                 "ND {} {:<.16E} {:<.16E} {:<.16E}\n",
                 node_id, coords[0], coords[1], value
             ));
+
+            // // Format coordinates and values to match SMS 2DM format
+            // // Use scientific notation with explicit + sign for exponent when needed
+            // let x_str = Self::format_coordinate(coords[0]);
+            // let y_str = Self::format_coordinate(coords[1]);
+            // let z_str = Self::format_coordinate(value);
+
+            // output.push_str(&format!("ND {} {} {} {}\n", node_id, x_str, y_str, z_str));
         }
 
         // Add boundaries
         output.push_str(&self.boundaries_to_2dm_string());
 
         output
+    }
+
+    /// Helper function to format coordinates in the SMS 2DM style
+    fn _format_coordinate(value: f64) -> String {
+        // Use Rust's standard scientific notation
+        let formatted = format!("{:.16E}", value);
+
+        // Convert to 2-digit exponent format required by SMS 2DM
+        if let Some(e_pos) = formatted.find('E') {
+            let (mantissa, exponent_part) = formatted.split_at(e_pos + 1);
+
+            // Handle different exponent formats
+            if exponent_part.len() == 2
+                && (exponent_part.starts_with('+') || exponent_part.starts_with('-'))
+            {
+                // E+1 or E-1 -> E+01 or E-01
+                let sign = &exponent_part[0..1];
+                let digit = &exponent_part[1..];
+                format!("{}{}0{}", mantissa, sign, digit)
+            } else if exponent_part.len() == 1 {
+                // E1 -> E+01
+                format!("{}+0{}", mantissa, exponent_part)
+            } else {
+                // Already in correct format (E+10, E-05, etc.)
+                formatted
+            }
+        } else {
+            formatted
+        }
     }
 
     /// Convert boundaries to 2DM nodestring format
