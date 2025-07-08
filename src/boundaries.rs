@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 #[derive(Builder, Debug, Clone)]
 #[builder(build_fn(validate = "Self::validate"))]
+#[allow(dead_code)]
 pub struct OpenBoundaries {
     nodes: Arc<Nodes>,
     nodes_ids: Vec<Vec<u32>>,
@@ -68,6 +69,7 @@ impl OpenBoundariesBuilder {
 
 #[derive(Builder, Debug, Clone)]
 #[builder(build_fn(validate = "Self::validate"))]
+#[allow(dead_code)]
 pub struct LandBoundaries {
     nodes: Arc<Nodes>,
     nodes_ids: Vec<Vec<u32>>,
@@ -105,6 +107,7 @@ impl LandBoundaries {
 
 #[derive(Builder, Debug, Clone)]
 #[builder(build_fn(validate = "Self::validate"))]
+#[allow(dead_code)]
 pub struct InteriorBoundaries {
     nodes: Arc<Nodes>,
     nodes_ids: Vec<Vec<u32>>,
@@ -142,8 +145,11 @@ impl InteriorBoundaries {
 #[derive(Builder, Debug, Clone)]
 #[builder(setter(into))]
 pub struct Boundaries {
+    #[builder(default)]
     open: Option<OpenBoundaries>,
+    #[builder(default)]
     land: Option<LandBoundaries>,
+    #[builder(default)]
     interior: Option<InteriorBoundaries>,
 }
 
