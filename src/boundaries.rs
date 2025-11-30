@@ -16,7 +16,7 @@ impl OpenBoundaries {
     pub fn nodes_ids(&self) -> &Vec<Vec<u32>> {
         &self.nodes_ids
     }
-    pub fn iter(&self) -> OpenBoundariesIter {
+    pub fn iter(&self) -> OpenBoundariesIter<'_> {
         OpenBoundariesIter {
             outer: &self.nodes_ids,
             current: 0,
