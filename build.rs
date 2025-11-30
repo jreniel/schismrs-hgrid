@@ -3,6 +3,7 @@ use std::fs;
 use std::path::Path;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let crate_env_name = "SCHISMRS_HGRID_VERSION";
     let version = std::env::var("CARGO_PKG_VERSION").unwrap();
     let profile = std::env::var("PROFILE").unwrap_or_else(|_| "unknown".to_string());
     let gitrepo_path = ".gitrepo";
@@ -79,8 +80,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let full_version = format!("{} {}", version, version_suffix);
 
-    println!("cargo:warning=Final version: {}", full_version);
-    println!("cargo:rustc-env=SCHISMRS_HGRID_VERSION={}", full_version);
+    println!("cargo:rustc-env={}={}", crate_env_name, full_version);
 
     // Tell cargo to rerun if relevant files change
     println!("cargo:rerun-if-changed=.gitrepo");
