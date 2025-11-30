@@ -10,10 +10,9 @@ use super::{
     nodes::{Nodes, NodesBuilder, NodesBuilderError},
 };
 use derive_builder::Builder;
+use linked_hash_map::LinkedHashMap;
 use ndarray::{Array1, Array2};
 use proj::Proj;
-// use std::collections::BTreeMap;
-use linked_hash_map::LinkedHashMap;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
