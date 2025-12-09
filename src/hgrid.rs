@@ -114,6 +114,201 @@ impl Hgrid {
         }
         Array1::from(counts)
     }
+
+    /// Check if the CRS is geographic (lon/lat based, e.g., EPSG:4326)
+    ///
+    /// Returns `true` if the CRS is geographic (uses angular units like degrees),
+    /// `false` if it's projected (uses linear units like meters) or if no CRS is defined.
+    ///
+    /// Detection checks multiple sources:
+    /// 1. The PROJ definition string for `+proj=longlat`
+    /// 2. The ProjJSON representation for "GeographicCRS"
+    pub fn is_geographic(&self) -> bool {
+        self.crs()
+            .map(|proj| {
+                // First check proj_info definition
+                if let Some(def) = proj.proj_info().definition.as_ref() {
+                    let def_lower = def.to_lowercase();
+                    if def_lower.contains("+proj=longlat") || def_lower.contains("proj=longlat") {
+                        return true;
+                    }
+                    if def_lower.contains("geographic") || def_lower.contains("geodetic") {
+                        return true;
+                    }
+                }
+
+                // Check the full definition via def()
+                if let Ok(full_def) = proj.def() {
+                    let def_lower = full_def.to_lowercase();
+                    if def_lower.contains("+proj=longlat") || def_lower.contains("proj=longlat") {
+                        return true;
+                    }
+                }
+
+                // Check ProjJSON for GeographicCRS - most reliable for EPSG codes
+                if let Ok(json) = proj.to_projjson(None, None, None) {
+                    if json.contains("GeographicCRS") {
+                        return true;
+                    }
+                }
+
+                false
+            })
+            .unwrap_or(false)
+    }
+
+    /// Get the CRS definition or description string if available
+    ///
+    /// Returns the proj definition string if available, otherwise falls back to
+    /// the description (e.g., "WGS 84" for EPSG:4326).
+    pub fn crs_definition(&self) -> Option<String> {
+        self.crs()
+            .and_then(|proj| {
+                let info = proj.proj_info();
+                // Try definition first (contains full PROJ string)
+                if let Some(def) = info.definition.as_ref() {
+                    if !def.is_empty() {
+                        return Some(def.clone());
+                    }
+                }
+                // Fall back to description (e.g., "WGS 84" for EPSG codes)
+                info.description.clone()
+            })
+    }
+
+    /// Compute the centroid of the mesh in lon/lat coordinates (EPSG:4326)
+    ///
+    /// If the mesh is already in geographic coordinates, returns the mean x/y directly.
+    /// If the mesh is in a projected CRS, transforms the centroid to EPSG:4326.
+    ///
+    /// Returns `(longitude, latitude)` in degrees.
+    pub fn centroid_lonlat(&self) -> Result<(f64, f64), HgridTryFromError> {
+        let x = self.x();
+        let y = self.y();
+
+        let mean_x = x.mean().unwrap_or(0.0);
+        let mean_y = y.mean().unwrap_or(0.0);
+
+        if self.is_geographic() {
+            // Already in lon/lat
+            Ok((mean_x, mean_y))
+        } else {
+            // Need to get the CRS definition to create a transformer
+            let src_def = self
+                .crs_definition()
+                .ok_or(HgridTryFromError::NoCrsDefined)?;
+
+            // Create a transformer from source CRS to WGS84
+            let transformer = Proj::new_known_crs(&src_def, "EPSG:4326", None)
+                .map_err(|e| HgridTryFromError::ProjError(e.to_string()))?;
+
+            let (lon, lat) = transformer
+                .convert((mean_x, mean_y))
+                .map_err(|e| HgridTryFromError::TransformError(e.to_string()))?;
+
+            Ok((lon, lat))
+        }
+    }
+
+    /// Transform all coordinates to a new CRS, returning a new Hgrid
+    ///
+    /// The source CRS must be defined on this Hgrid.
+    /// `dst_crs` can be any valid PROJ string (e.g., "EPSG:4326", "EPSG:32618", etc.)
+    pub fn transform_to(&self, dst_crs: &str) -> Result<Hgrid, HgridTryFromError> {
+        let src_def = self
+            .crs_definition()
+            .ok_or(HgridTryFromError::NoCrsDefined)?;
+
+        // Create a transformer from source CRS to destination CRS
+        let transformer = Proj::new_known_crs(&src_def, dst_crs, None)
+            .map_err(|e| HgridTryFromError::ProjError(e.to_string()))?;
+
+        // Create a Proj object for the destination CRS (for storing in the result)
+        let dst_proj = Proj::new(dst_crs)
+            .map_err(|e| HgridTryFromError::ProjError(e.to_string()))?;
+
+        // Transform all node coordinates
+        let mut new_nodes: LinkedHashMap<u32, (Vec<f64>, Option<Vec<f64>>)> = LinkedHashMap::new();
+
+        for (node_id, (coords, values)) in self.nodes.hash_map().iter() {
+            let (new_x, new_y) = transformer
+                .convert((coords[0], coords[1]))
+                .map_err(|e| HgridTryFromError::TransformError(e.to_string()))?;
+
+            new_nodes.insert(*node_id, (vec![new_x, new_y], values.clone()));
+        }
+
+        // Build new Nodes with transformed coordinates
+        let new_nodes_struct = NodesBuilder::default()
+            .hash_map(new_nodes)
+            .crs(Some(Arc::new(dst_proj)))
+            .build()?;
+
+        // Build new Hgrid with the same elements and boundaries but new nodes
+        let new_nodes_arc = Arc::new(new_nodes_struct);
+
+        // Rebuild elements with reference to new nodes
+        let new_elements = ElementsBuilder::default()
+            .nodes(new_nodes_arc.clone())
+            .hash_map(self.elements.hash_map().clone())
+            .build()?;
+
+        // Rebuild boundaries if present
+        let new_boundaries = if let Some(boundaries) = &self.boundaries {
+            let type_map = boundaries.to_boundary_type_map();
+
+            let mut boundaries_builder = BoundariesBuilder::default();
+
+            if !type_map[&BoundaryType::Open].is_empty() {
+                let open = OpenBoundariesBuilder::default()
+                    .nodes_ids(type_map[&BoundaryType::Open].clone())
+                    .nodes(new_nodes_arc.clone())
+                    .build()?;
+                boundaries_builder.open(Some(open));
+            }
+
+            if !type_map[&BoundaryType::Land].is_empty() {
+                let land = LandBoundariesBuilder::default()
+                    .nodes_ids(type_map[&BoundaryType::Land].clone())
+                    .nodes(new_nodes_arc.clone())
+                    .build()?;
+                boundaries_builder.land(Some(land));
+            }
+
+            if !type_map[&BoundaryType::Interior].is_empty() {
+                let interior = InteriorBoundariesBuilder::default()
+                    .nodes_ids(type_map[&BoundaryType::Interior].clone())
+                    .nodes(new_nodes_arc.clone())
+                    .build()?;
+                boundaries_builder.interior(Some(interior));
+            }
+
+            Some(boundaries_builder.build()?)
+        } else {
+            None
+        };
+
+        Ok(Hgrid {
+            nodes: new_nodes_arc,
+            elements: new_elements,
+            boundaries: new_boundaries,
+            description: self.description.clone(),
+        })
+    }
+
+    /// Transform coordinates to EPSG:4326 (WGS84 lon/lat)
+    ///
+    /// Convenience method for generating hgrid.ll.
+    /// If the mesh is already in EPSG:4326, returns a clone.
+    pub fn to_lonlat(&self) -> Result<Hgrid, HgridTryFromError> {
+        if self.is_geographic() {
+            // Check if it's specifically EPSG:4326 or another geographic CRS
+            // For simplicity, if it's any geographic CRS we clone (they're all lon/lat)
+            Ok(self.clone())
+        } else {
+            self.transform_to("EPSG:4326")
+        }
+    }
 }
 
 #[derive(Error, Debug)]
@@ -141,6 +336,15 @@ pub enum HgridTryFromError {
 
     #[error(transparent)]
     InteriorBoundariesBuilderError(#[from] InteriorBoundariesBuilderError),
+
+    #[error("No CRS defined for hgrid - cannot perform coordinate transformation")]
+    NoCrsDefined,
+
+    #[error("Coordinate transformation failed: {0}")]
+    TransformError(String),
+
+    #[error("PROJ error: {0}")]
+    ProjError(String),
 }
 
 impl TryFrom<&PathBuf> for Hgrid {
@@ -345,5 +549,66 @@ mod tests {
         log::info!("Begin writting Hgrid to {}", temp_path.display());
         let _result = hgrid.write(temp_path);
         log::debug!("Done writting hgrid to {}", temp_path.display());
+    }
+
+    #[test]
+    fn test_epsg4326_is_geographic() {
+        // Test that EPSG:4326 is correctly detected as geographic
+        let proj = Proj::new("EPSG:4326").expect("Should parse EPSG:4326");
+
+        // Check what def() returns
+        if let Ok(def) = proj.def() {
+            println!("EPSG:4326 def(): '{}'", def);
+        }
+
+        // Check proj_info
+        let info = proj.proj_info();
+        println!("EPSG:4326 proj_info.definition: {:?}", info.definition);
+
+        // Check projjson
+        if let Ok(json) = proj.to_projjson(None, None, None) {
+            println!("EPSG:4326 projjson (first 500 chars): {}", &json[..json.len().min(500)]);
+            // ProjJSON should contain "GeographicCRS" for geographic systems
+            assert!(
+                json.contains("GeographicCRS") || json.contains("geographic"),
+                "EPSG:4326 projjson should indicate geographic CRS"
+            );
+        }
+    }
+
+    #[test]
+    fn test_utm_is_not_geographic() {
+        // Test that UTM is NOT detected as geographic
+        let proj = Proj::new("EPSG:32618").expect("Should parse EPSG:32618 (UTM 18N)");
+
+        if let Ok(def) = proj.def() {
+            println!("EPSG:32618 def(): {}", def);
+            assert!(
+                !def.to_lowercase().contains("+proj=longlat"),
+                "UTM should NOT contain +proj=longlat, got: {}",
+                def
+            );
+        }
+    }
+
+    #[test]
+    #[ignore] // Requires the dev hgrid file to exist
+    fn test_load_dev_hgrid_epsg4326() {
+        // Test loading the actual dev hgrid file
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent().unwrap()
+            .join("schismrs/dev/hgrid.gr3");
+
+        if !path.exists() {
+            println!("Skipping test - dev hgrid not found at {:?}", path);
+            return;
+        }
+
+        let hgrid = Hgrid::try_from(&path).expect("Should load hgrid");
+
+        // Check CRS was parsed
+        println!("CRS: {:?}", hgrid.crs());
+        println!("is_geographic: {}", hgrid.is_geographic());
+        println!("CRS definition: {:?}", hgrid.crs_definition());
     }
 }

@@ -296,14 +296,34 @@ fn proj_new_silent(definition: &str) -> Result<Proj, proj::ProjCreateError> {
 }
 
 fn get_proj_from_description(description: &str) -> Option<Proj> {
+    // Try full string first
     if let Ok(proj) = proj_new_silent(description) {
         return Some(proj);
     }
 
     let words: Vec<&str> = description.split_whitespace().collect();
-    for i in 0..words.len() {
-        let substr = words[i..].join(" ");
+
+    // Try substrings from the beginning (CRS often at start)
+    // e.g. "EPSG:4326 !grd info:None" -> try "EPSG:4326", "EPSG:4326 !grd", etc.
+    for end in 1..=words.len() {
+        let substr = words[0..end].join(" ");
         if let Ok(proj) = proj_new_silent(&substr) {
+            return Some(proj);
+        }
+    }
+
+    // Also try substrings from the end (CRS sometimes at end)
+    // e.g. "mesh description EPSG:4326" -> try "EPSG:4326", "description EPSG:4326", etc.
+    for start in 1..words.len() {
+        let substr = words[start..].join(" ");
+        if let Ok(proj) = proj_new_silent(&substr) {
+            return Some(proj);
+        }
+    }
+
+    // Try each individual word (handles cases like "EPSG:4326" as standalone)
+    for word in &words {
+        if let Ok(proj) = proj_new_silent(word) {
             return Some(proj);
         }
     }
@@ -319,15 +339,44 @@ pub fn get_description_without_proj(description: &str) -> String {
 
     let words: Vec<&str> = description.split_whitespace().collect();
 
-    // Find the first index where the substring from that point is a valid PROJ string
-    if let Some(split_index) = (0..words.len()).find(|&i| {
+    // Check if CRS is at the beginning - try progressively longer prefixes
+    // e.g. "EPSG:4326 !grd info:None" -> CRS is first word, return "!grd info:None"
+    for end in 1..=words.len() {
+        let prefix = words[0..end].join(" ");
+        if proj_new_silent(&prefix).is_ok() {
+            // CRS is at the beginning, return everything after it
+            if end < words.len() {
+                return words[end..].join(" ");
+            } else {
+                return String::new();
+            }
+        }
+    }
+
+    // Check if CRS is at the end - find where it starts
+    // e.g. "mesh description EPSG:4326" -> return "mesh description"
+    if let Some(split_index) = (1..words.len()).find(|&i| {
         let substr = words[i..].join(" ");
         proj_new_silent(&substr).is_ok()
     }) {
-        words[0..split_index].join(" ")
-    } else {
-        description.to_string()
+        return words[0..split_index].join(" ");
     }
+
+    // Check if any single word is a CRS and remove it
+    for (i, word) in words.iter().enumerate() {
+        if proj_new_silent(word).is_ok() {
+            let mut result_words: Vec<&str> = Vec::new();
+            for (j, w) in words.iter().enumerate() {
+                if j != i {
+                    result_words.push(w);
+                }
+            }
+            return result_words.join(" ");
+        }
+    }
+
+    // No CRS found, return original description
+    description.to_string()
 }
 
 pub fn parse_from_reader<R: Read>(
@@ -363,7 +412,7 @@ pub fn parse_from_reader<R: Read>(
         }
     };
     let mut line = line.split_whitespace();
-    log::info!("Start reading nodes...");
+    log::debug!("Start reading nodes...");
     let ne: u32 = match line.next() {
         Some(ne_str) => match ne_str.parse::<u32>() {
             Ok(ne) => ne,
@@ -506,7 +555,7 @@ pub fn parse_from_reader<R: Read>(
         nodemap.insert(node_id, data);
     }
     // let nodes = Nodes::new(nodemap, crs);
-    log::info!("Start reading elements...");
+    log::debug!("Start reading elements...");
     let mut elemmap = LinkedHashMap::new();
     for _ in 0..ne {
         let line = match buf.next() {
@@ -1254,5 +1303,76 @@ mod tests_2dm {
         assert!(sms2dm_string.contains("E3T 3 4 6 5"));
 
         println!("Mixed element 2DM string:\n{}", sms2dm_string);
+    }
+}
+
+#[cfg(test)]
+mod tests_proj_parsing {
+    use super::*;
+
+    #[test]
+    fn test_proj_new_direct() {
+        // Test that Proj::new works directly
+        let proj = Proj::new("EPSG:4326");
+        assert!(proj.is_ok(), "Proj::new('EPSG:4326') should succeed");
+
+        // Also test lowercase
+        let proj_lower = Proj::new("epsg:4326");
+        assert!(proj_lower.is_ok(), "Proj::new('epsg:4326') should succeed");
+    }
+
+    #[test]
+    fn test_proj_new_silent() {
+        // Test our silent wrapper
+        let proj = proj_new_silent("EPSG:4326");
+        assert!(proj.is_ok(), "proj_new_silent('EPSG:4326') should succeed");
+    }
+
+    #[test]
+    fn test_get_proj_from_description_crs_at_start() {
+        // Test with CRS at the beginning of description
+        let description = "EPSG:4326 !grd info:None";
+        let proj = get_proj_from_description(description);
+        assert!(proj.is_some(), "Should extract EPSG:4326 from description");
+    }
+
+    #[test]
+    fn test_get_proj_from_description_crs_at_end() {
+        // Test with CRS at the end of description
+        let description = "mesh description EPSG:4326";
+        let proj = get_proj_from_description(description);
+        assert!(proj.is_some(), "Should extract EPSG:4326 from end of description");
+    }
+
+    #[test]
+    fn test_get_proj_from_description_proj_string() {
+        // Test with PROJ string
+        let description = "+proj=longlat +datum=WGS84 +no_defs";
+        let proj = get_proj_from_description(description);
+        assert!(proj.is_some(), "Should parse PROJ string");
+    }
+
+    #[test]
+    fn test_get_description_without_proj_crs_at_start() {
+        // Test removing CRS from start
+        let description = "EPSG:4326 !grd info:None";
+        let result = get_description_without_proj(description);
+        assert_eq!(result, "!grd info:None");
+    }
+
+    #[test]
+    fn test_get_description_without_proj_crs_at_end() {
+        // Test removing CRS from end
+        let description = "mesh description EPSG:4326";
+        let result = get_description_without_proj(description);
+        assert_eq!(result, "mesh description");
+    }
+
+    #[test]
+    fn test_get_description_without_proj_no_crs() {
+        // Test when no CRS is present
+        let description = "mesh description without CRS";
+        let result = get_description_without_proj(description);
+        assert_eq!(result, description);
     }
 }
