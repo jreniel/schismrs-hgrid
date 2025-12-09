@@ -19,6 +19,29 @@ use std::sync::Arc;
 use thiserror::Error;
 use url::Url;
 
+/// Depth sign convention for grid data.
+///
+/// SCHISM gr3 files use positive-down convention (positive values = below surface).
+/// This is now the default internal storage convention.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DepthConvention {
+    /// Positive values = down (SCHISM file convention: 10.0 means 10m below surface)
+    #[default]
+    PositiveDown,
+    /// Positive values = up / negative = down (elevation-style convention)
+    PositiveUp,
+}
+
+impl DepthConvention {
+    /// Returns the opposite convention
+    pub fn flip(&self) -> Self {
+        match self {
+            DepthConvention::PositiveDown => DepthConvention::PositiveUp,
+            DepthConvention::PositiveUp => DepthConvention::PositiveDown,
+        }
+    }
+}
+
 #[derive(Builder, Debug, Clone)]
 #[builder(setter(into))]
 pub struct Hgrid {
@@ -26,6 +49,10 @@ pub struct Hgrid {
     elements: Elements,
     boundaries: Option<Boundaries>,
     description: Option<String>,
+    /// The depth sign convention used for values in this grid.
+    /// Default is PositiveDown (SCHISM file convention).
+    #[builder(default)]
+    depth_convention: DepthConvention,
 }
 
 impl Hgrid {
@@ -53,6 +80,12 @@ impl Hgrid {
         self.nodes.y()
     }
 
+    /// Get depths as stored internally, respecting the current depth convention.
+    ///
+    /// By default (after loading from gr3), depths are stored in positive-down convention
+    /// (SCHISM file convention): 10.0 means 10m below surface.
+    ///
+    /// Use `depth_convention()` to check the current convention.
     pub fn depths(&self) -> Array1<f64> {
         let node_hashmap = self.nodes.hash_map();
         let depths: Vec<f64> = node_hashmap
@@ -66,6 +99,75 @@ impl Hgrid {
 
         depths.into()
     }
+
+    /// Get depths as positive-down values (matching gr3 file convention).
+    ///
+    /// This is the standard SCHISM/oceanographic convention where positive values
+    /// indicate depth below the surface. A value of 10.0 means 10m below surface.
+    ///
+    /// If the internal convention is already PositiveDown, returns depths as-is.
+    /// If the internal convention is PositiveUp, negates the values.
+    pub fn depths_positive_down(&self) -> Array1<f64> {
+        match self.depth_convention {
+            DepthConvention::PositiveDown => self.depths(),
+            DepthConvention::PositiveUp => self.depths().mapv(|d| -d),
+        }
+    }
+
+    /// Get depths as positive-up values (elevation-style convention).
+    ///
+    /// In this convention, negative values indicate depth below the surface.
+    /// A value of -10.0 means 10m below surface.
+    ///
+    /// If the internal convention is already PositiveUp, returns depths as-is.
+    /// If the internal convention is PositiveDown, negates the values.
+    pub fn depths_positive_up(&self) -> Array1<f64> {
+        match self.depth_convention {
+            DepthConvention::PositiveUp => self.depths(),
+            DepthConvention::PositiveDown => self.depths().mapv(|d| -d),
+        }
+    }
+
+    /// Returns the depth convention used for internal storage.
+    pub fn depth_convention(&self) -> DepthConvention {
+        self.depth_convention
+    }
+
+    /// Flip the depth values in place, changing the sign convention.
+    ///
+    /// This mutates the Hgrid by negating all depth values and updating
+    /// the depth_convention field accordingly.
+    ///
+    /// After calling this method:
+    /// - If convention was PositiveDown, it becomes PositiveUp
+    /// - If convention was PositiveUp, it becomes PositiveDown
+    /// - All depth values are negated
+    pub fn flip_depths(&mut self) {
+        // Get the current nodes hash map
+        let old_nodes = self.nodes.hash_map();
+
+        // Create new hash map with negated depth values
+        let new_nodes: LinkedHashMap<u32, (Vec<f64>, Option<Vec<f64>>)> = old_nodes
+            .iter()
+            .map(|(&node_id, (coord, value))| {
+                let negated_value = value.as_ref().map(|v| v.iter().map(|&x| -x).collect());
+                (node_id, (coord.clone(), negated_value))
+            })
+            .collect();
+
+        // Rebuild the nodes with the new values
+        let new_nodes_struct = NodesBuilder::default()
+            .hash_map(new_nodes)
+            .crs(self.nodes.crs())
+            .build()
+            .expect("Failed to rebuild nodes after flip_depths");
+
+        // Update the Hgrid
+        self.nodes = Arc::new(new_nodes_struct);
+        self.depth_convention = self.depth_convention.flip();
+    }
+
+
     pub fn xy(&self) -> Array2<f64> {
         self.nodes.xy()
     }
@@ -77,17 +179,24 @@ impl Hgrid {
     pub fn write(&self, path: &Path) -> std::io::Result<()> {
         let mut gr3_parser_output_builder = Gr3ParserOutputBuilder::default();
         gr3_parser_output_builder.description(self.description.clone());
-        // since gr3 reverses hgrid values...
-        let reversed_nodes: LinkedHashMap<u32, (Vec<f64>, Option<Vec<f64>>)> = self
-            .nodes
-            .hash_map()
-            .iter()
-            .map(|(&node_id, (coord, value))| {
-                let reversed_value = value.as_ref().map(|v| v.iter().map(|&x| -x).collect());
-                (node_id, (coord.clone(), reversed_value))
-            })
-            .collect();
-        gr3_parser_output_builder.nodes(reversed_nodes);
+
+        // gr3 files use positive-down convention
+        // If we're in positive-down, write as-is; if positive-up, negate
+        let output_nodes: LinkedHashMap<u32, (Vec<f64>, Option<Vec<f64>>)> = match self
+            .depth_convention
+        {
+            DepthConvention::PositiveDown => self.nodes.hash_map().clone(),
+            DepthConvention::PositiveUp => self
+                .nodes
+                .hash_map()
+                .iter()
+                .map(|(&node_id, (coord, value))| {
+                    let negated_value = value.as_ref().map(|v| v.iter().map(|&x| -x).collect());
+                    (node_id, (coord.clone(), negated_value))
+                })
+                .collect(),
+        };
+        gr3_parser_output_builder.nodes(output_nodes);
         gr3_parser_output_builder.elements(self.elements.hash_map().clone());
         gr3_parser_output_builder.crs(self.crs().clone());
         if let Some(boundaries) = &self.boundaries {
@@ -293,6 +402,7 @@ impl Hgrid {
             elements: new_elements,
             boundaries: new_boundaries,
             description: self.description.clone(),
+            depth_convention: self.depth_convention, // Preserve depth convention
         })
     }
 
@@ -371,8 +481,9 @@ impl TryFrom<&Gr3ParserOutput> for Hgrid {
     type Error = HgridTryFromError;
 
     fn try_from(parsed_gr3: &Gr3ParserOutput) -> Result<Self, Self::Error> {
+        // Use nodes() directly - no reversal, keep positive-down convention from gr3 file
         let nodes = NodesBuilder::default()
-            .hash_map(parsed_gr3.nodes_values_reversed_sign())
+            .hash_map(parsed_gr3.nodes())
             .crs(parsed_gr3.crs())
             .build()
             .map(Arc::new)?;
@@ -444,6 +555,7 @@ impl TryFrom<&Gr3ParserOutput> for Hgrid {
             nodes,
             elements,
             boundaries,
+            depth_convention: DepthConvention::PositiveDown, // gr3 uses positive-down
         })
     }
 }
@@ -589,6 +701,135 @@ mod tests {
                 def
             );
         }
+    }
+
+    #[test]
+    fn test_depth_convention_methods() {
+        // Create a simple test mesh with known depths
+        // Using positive-down convention (SCHISM file format)
+        let mut nodes_hash_map: LinkedHashMap<u32, (Vec<f64>, Option<Vec<f64>>)> =
+            LinkedHashMap::new();
+
+        // Add nodes with depths in positive-down convention
+        // 10.0 means 10m below surface
+        nodes_hash_map.insert(0, (vec![0.0, 0.0], Some(vec![10.0])));
+        nodes_hash_map.insert(1, (vec![1.0, 0.0], Some(vec![20.0])));
+        nodes_hash_map.insert(2, (vec![0.5, 1.0], Some(vec![5.0])));
+
+        let nodes = NodesBuilder::default()
+            .hash_map(nodes_hash_map)
+            .crs(None::<Arc<Proj>>)
+            .build()
+            .map(Arc::new)
+            .unwrap();
+
+        let mut elements_hash_map: LinkedHashMap<u32, Vec<u32>> = LinkedHashMap::new();
+        elements_hash_map.insert(0, vec![0, 1, 2]);
+
+        let elements = ElementsBuilder::default()
+            .nodes(nodes.clone())
+            .hash_map(elements_hash_map)
+            .build()
+            .unwrap();
+
+        let hgrid = HgridBuilder::default()
+            .nodes(nodes)
+            .elements(elements)
+            .boundaries(None)
+            .description(None::<String>)
+            .build()
+            .unwrap();
+
+        // Test depth_convention - default is PositiveDown
+        assert_eq!(hgrid.depth_convention(), DepthConvention::PositiveDown);
+
+        // Test depths() returns internal values (positive-down)
+        let depths = hgrid.depths();
+        assert_eq!(depths.len(), 3);
+        // Values should be positive (positive-down convention)
+        assert!(depths.iter().all(|&d| d >= 0.0));
+
+        // Test depths_positive_down() returns positive values
+        let depths_pd = hgrid.depths_positive_down();
+        assert_eq!(depths_pd.len(), 3);
+        // Values should be positive (same as internal)
+        assert!(depths_pd.iter().all(|&d| d >= 0.0));
+
+        // Verify the values are correct
+        assert!((depths_pd[0] - 10.0).abs() < 1e-9);
+        assert!((depths_pd[1] - 20.0).abs() < 1e-9);
+        assert!((depths_pd[2] - 5.0).abs() < 1e-9);
+
+        // Test depths_positive_up() returns negative values
+        let depths_pu = hgrid.depths_positive_up();
+        assert!(depths_pu.iter().all(|&d| d <= 0.0));
+        assert!((depths_pu[0] - (-10.0)).abs() < 1e-9);
+        assert!((depths_pu[1] - (-20.0)).abs() < 1e-9);
+        assert!((depths_pu[2] - (-5.0)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_flip_depths() {
+        // Create a test mesh with positive-down convention (need 3 nodes for a triangle)
+        let mut nodes_hash_map: LinkedHashMap<u32, (Vec<f64>, Option<Vec<f64>>)> =
+            LinkedHashMap::new();
+
+        nodes_hash_map.insert(0, (vec![0.0, 0.0], Some(vec![10.0])));
+        nodes_hash_map.insert(1, (vec![1.0, 0.0], Some(vec![20.0])));
+        nodes_hash_map.insert(2, (vec![0.5, 1.0], Some(vec![15.0])));
+
+        let nodes = NodesBuilder::default()
+            .hash_map(nodes_hash_map)
+            .crs(None::<Arc<Proj>>)
+            .build()
+            .map(Arc::new)
+            .unwrap();
+
+        let mut elements_hash_map: LinkedHashMap<u32, Vec<u32>> = LinkedHashMap::new();
+        elements_hash_map.insert(0, vec![0, 1, 2]); // Triangle element
+
+        let elements = ElementsBuilder::default()
+            .nodes(nodes.clone())
+            .hash_map(elements_hash_map)
+            .build()
+            .unwrap();
+
+        let mut hgrid = HgridBuilder::default()
+            .nodes(nodes)
+            .elements(elements)
+            .boundaries(None)
+            .description(None::<String>)
+            .build()
+            .unwrap();
+
+        // Initially positive-down
+        assert_eq!(hgrid.depth_convention(), DepthConvention::PositiveDown);
+        let depths_before = hgrid.depths();
+        assert!((depths_before[0] - 10.0).abs() < 1e-9);
+        assert!((depths_before[1] - 20.0).abs() < 1e-9);
+        assert!((depths_before[2] - 15.0).abs() < 1e-9);
+
+        // Flip to positive-up
+        hgrid.flip_depths();
+        assert_eq!(hgrid.depth_convention(), DepthConvention::PositiveUp);
+        let depths_after = hgrid.depths();
+        assert!((depths_after[0] - (-10.0)).abs() < 1e-9);
+        assert!((depths_after[1] - (-20.0)).abs() < 1e-9);
+        assert!((depths_after[2] - (-15.0)).abs() < 1e-9);
+
+        // depths_positive_down should still give positive values
+        let depths_pd = hgrid.depths_positive_down();
+        assert!((depths_pd[0] - 10.0).abs() < 1e-9);
+        assert!((depths_pd[1] - 20.0).abs() < 1e-9);
+        assert!((depths_pd[2] - 15.0).abs() < 1e-9);
+
+        // Flip back to positive-down
+        hgrid.flip_depths();
+        assert_eq!(hgrid.depth_convention(), DepthConvention::PositiveDown);
+        let depths_final = hgrid.depths();
+        assert!((depths_final[0] - 10.0).abs() < 1e-9);
+        assert!((depths_final[1] - 20.0).abs() < 1e-9);
+        assert!((depths_final[2] - 15.0).abs() < 1e-9);
     }
 
     #[test]

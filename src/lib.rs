@@ -1,3 +1,4 @@
+pub use hgrid::DepthConvention;
 pub use hgrid::Hgrid;
 pub use hgrid::HgridBuilder;
 pub use hgrid::HgridTryFromError;
