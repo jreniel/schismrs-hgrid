@@ -1,11 +1,11 @@
 use super::nodes::Nodes;
 use derive_builder::Builder;
 use linked_hash_map::LinkedHashMap;
-use std::collections::HashSet;
 use std::sync::Arc;
 
+/// Open boundary segments for an unstructured mesh.
+/// Validation is performed separately via `Hgrid::check_validity()`.
 #[derive(Builder, Debug, Clone)]
-#[builder(build_fn(validate = "Self::validate"))]
 #[allow(dead_code)]
 pub struct OpenBoundaries {
     nodes: Arc<Nodes>,
@@ -43,60 +43,13 @@ impl<'a> Iterator for OpenBoundariesIter<'a> {
     }
 }
 
-impl OpenBoundariesBuilder {
-    pub fn validate(&self) -> Result<(), OpenBoundariesBuilderError> {
-        let node_hash_set: HashSet<u32> = self.nodes.as_ref().map_or(HashSet::new(), |nodes_arc| {
-            let nodes = Arc::as_ref(nodes_arc);
-            nodes.hash_map().keys().cloned().collect()
-        });
-
-        let all_node_ids: HashSet<u32> =
-            self.nodes_ids.as_ref().map_or(HashSet::new(), |node_ids| {
-                node_ids
-                    .iter()
-                    .flat_map(|ids| ids.iter())
-                    .cloned()
-                    .collect()
-            });
-        if !all_node_ids.is_subset(&node_hash_set) {
-            return Err(OpenBoundariesBuilderError::ValidationError(
-                "Found open boundary node ids not in nodes.".to_string(),
-            ));
-        };
-        Ok(())
-    }
-}
-
+/// Land boundary segments for an unstructured mesh.
+/// Validation is performed separately via `Hgrid::check_validity()`.
 #[derive(Builder, Debug, Clone)]
-#[builder(build_fn(validate = "Self::validate"))]
 #[allow(dead_code)]
 pub struct LandBoundaries {
     nodes: Arc<Nodes>,
     nodes_ids: Vec<Vec<u32>>,
-}
-
-impl LandBoundariesBuilder {
-    pub fn validate(&self) -> Result<(), LandBoundariesBuilderError> {
-        let node_hash_set: HashSet<u32> = self.nodes.as_ref().map_or(HashSet::new(), |nodes_arc| {
-            let nodes = Arc::as_ref(nodes_arc);
-            nodes.hash_map().keys().cloned().collect()
-        });
-
-        let all_node_ids: HashSet<u32> =
-            self.nodes_ids.as_ref().map_or(HashSet::new(), |node_ids| {
-                node_ids
-                    .iter()
-                    .flat_map(|ids| ids.iter())
-                    .cloned()
-                    .collect()
-            });
-        if !all_node_ids.is_subset(&node_hash_set) {
-            return Err(LandBoundariesBuilderError::ValidationError(
-                "Found land boundary node ids not in nodes.".to_string(),
-            ));
-        };
-        Ok(())
-    }
 }
 
 impl LandBoundaries {
@@ -105,37 +58,15 @@ impl LandBoundaries {
     }
 }
 
+/// Interior boundary segments for an unstructured mesh.
+/// Validation is performed separately via `Hgrid::check_validity()`.
 #[derive(Builder, Debug, Clone)]
-#[builder(build_fn(validate = "Self::validate"))]
 #[allow(dead_code)]
 pub struct InteriorBoundaries {
     nodes: Arc<Nodes>,
     nodes_ids: Vec<Vec<u32>>,
 }
 
-impl InteriorBoundariesBuilder {
-    pub fn validate(&self) -> Result<(), InteriorBoundariesBuilderError> {
-        let node_hash_set: HashSet<u32> = self.nodes.as_ref().map_or(HashSet::new(), |nodes_arc| {
-            let nodes = Arc::as_ref(nodes_arc);
-            nodes.hash_map().keys().cloned().collect()
-        });
-
-        let all_node_ids: HashSet<u32> =
-            self.nodes_ids.as_ref().map_or(HashSet::new(), |node_ids| {
-                node_ids
-                    .iter()
-                    .flat_map(|ids| ids.iter())
-                    .cloned()
-                    .collect()
-            });
-        if !all_node_ids.is_subset(&node_hash_set) {
-            return Err(InteriorBoundariesBuilderError::ValidationError(
-                "Found interior boundary node ids not in nodes.".to_string(),
-            ));
-        };
-        Ok(())
-    }
-}
 impl InteriorBoundaries {
     pub fn nodes_ids(&self) -> &Vec<Vec<u32>> {
         &self.nodes_ids
