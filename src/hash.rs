@@ -13,33 +13,31 @@ use std::hash::{Hash, Hasher};
 impl Hash for Hgrid {
     fn hash<H: Hasher>(&self, state: &mut H) {
         // Hash the description
-        self.description.hash(state);
+        self.description().hash(state);
 
-        // Hash nodes in a deterministic order (by ID)
-        let mut node_ids: Vec<_> = self.nodes.hash_map().keys().copied().collect();
-        node_ids.sort();
-
-        for node_id in node_ids {
-            if let Some((coords, values)) = self.nodes.hash_map().get(&node_id) {
-                node_id.hash(state);
-                coords.hash(state);
-                values.hash(state);
+        // Hash nodes in insertion order (LinkedHashMap preserves order)
+        // No sorting needed - iteration order is deterministic
+        for (node_id, (coords, values)) in self.nodes().hash_map().iter() {
+            node_id.hash(state);
+            // f64 doesn't impl Hash, so hash the bytes
+            for coord in coords {
+                state.write(&coord.to_le_bytes());
+            }
+            if let Some(vals) = values {
+                for val in vals {
+                    state.write(&val.to_le_bytes());
+                }
             }
         }
 
-        // Hash elements in a deterministic order (by ID)
-        let mut element_ids: Vec<_> = self.elements.hash_map().keys().copied().collect();
-        element_ids.sort();
-
-        for element_id in element_ids {
-            if let Some(node_list) = self.elements.hash_map().get(&element_id) {
-                element_id.hash(state);
-                node_list.hash(state);
-            }
+        // Hash elements in insertion order (LinkedHashMap preserves order)
+        for (element_id, node_list) in self.elements().hash_map().iter() {
+            element_id.hash(state);
+            node_list.hash(state);
         }
 
         // Hash boundaries if present
-        if let Some(boundaries) = &self.boundaries {
+        if let Some(boundaries) = self.boundaries() {
             boundaries.hash(state);
         }
 
@@ -61,31 +59,45 @@ impl Hgrid {
     pub fn calculate_hash(&self) -> String {
         let mut hasher = Sha256::new();
 
-        // Use std::hash::Hash to get bytes, then hash those with SHA256
-        let mut std_hasher = DefaultHasher::new();
-        self.hash(&mut std_hasher);
-        let hash_u64 = std_hasher.finish();
-
-        hasher.update(&hash_u64.to_le_bytes());
-
-        // Also include the raw content for extra precision
+        // Hash description
         hasher.update(self.description().unwrap_or(&String::new()).as_bytes());
 
-        // Hash node data directly
-        let mut node_ids: Vec<_> = self.nodes.hash_map().keys().copied().collect();
-        node_ids.sort();
-
-        for node_id in node_ids {
-            if let Some((coords, values)) = self.nodes.hash_map().get(&node_id) {
-                hasher.update(&node_id.to_le_bytes());
-                for coord in coords {
-                    hasher.update(&coord.to_le_bytes());
+        // Hash node data directly in insertion order (LinkedHashMap is deterministic)
+        for (node_id, (coords, values)) in self.nodes().hash_map().iter() {
+            hasher.update(&node_id.to_le_bytes());
+            for coord in coords {
+                hasher.update(&coord.to_le_bytes());
+            }
+            if let Some(vals) = values {
+                for val in vals {
+                    hasher.update(&val.to_le_bytes());
                 }
-                if let Some(vals) = values {
-                    for val in vals {
-                        hasher.update(&val.to_le_bytes());
+            }
+        }
+
+        // Hash element data directly in insertion order
+        for (element_id, node_list) in self.elements().hash_map().iter() {
+            hasher.update(&element_id.to_le_bytes());
+            for node_id in node_list {
+                hasher.update(&node_id.to_le_bytes());
+            }
+        }
+
+        // Hash boundaries if present
+        if let Some(boundaries) = self.boundaries() {
+            if let Some(open) = boundaries.open() {
+                for boundary in open.nodes_ids() {
+                    for node_id in boundary {
+                        hasher.update(&node_id.to_le_bytes());
                     }
                 }
+            }
+        }
+
+        // Hash CRS if present
+        if let Some(crs) = self.crs() {
+            if let Some(definition) = &crs.proj_info().definition {
+                hasher.update(definition.as_bytes());
             }
         }
 
