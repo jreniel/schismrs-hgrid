@@ -15,13 +15,19 @@ use url::Url;
 #[derive(Builder, Default, Debug)]
 #[builder(setter(into))]
 pub struct Gr3ParserOutput {
-    description: Option<String>,
-    crs: Option<Arc<Proj>>,
-    nodes: LinkedHashMap<u32, (Vec<f64>, Option<Vec<f64>>)>,
-    elements: Option<LinkedHashMap<u32, Vec<u32>>>,
-    open_boundaries: Option<Vec<Vec<u32>>>,
-    land_boundaries: Option<Vec<Vec<u32>>>,
-    interior_boundaries: Option<Vec<Vec<u32>>>,
+    #[builder(default)]
+    pub(crate) description: Option<String>,
+    #[builder(default)]
+    pub(crate) crs: Option<Arc<Proj>>,
+    pub(crate) nodes: LinkedHashMap<u32, (Vec<f64>, Option<Vec<f64>>)>,
+    #[builder(default)]
+    pub(crate) elements: Option<LinkedHashMap<u32, Vec<u32>>>,
+    #[builder(default)]
+    pub(crate) open_boundaries: Option<Vec<Vec<u32>>>,
+    #[builder(default)]
+    pub(crate) land_boundaries: Option<Vec<Vec<u32>>>,
+    #[builder(default)]
+    pub(crate) interior_boundaries: Option<Vec<Vec<u32>>>,
 }
 
 impl Gr3ParserOutput {
@@ -59,6 +65,27 @@ impl Gr3ParserOutput {
 
     pub fn interior_boundaries(&self) -> Option<Vec<Vec<u32>>> {
         self.interior_boundaries.clone()
+    }
+
+    // Reference accessors (avoid cloning)
+    pub fn nodes_ref(&self) -> &LinkedHashMap<u32, (Vec<f64>, Option<Vec<f64>>)> {
+        &self.nodes
+    }
+
+    pub fn elements_ref(&self) -> Option<&LinkedHashMap<u32, Vec<u32>>> {
+        self.elements.as_ref()
+    }
+
+    pub fn open_boundaries_ref(&self) -> Option<&Vec<Vec<u32>>> {
+        self.open_boundaries.as_ref()
+    }
+
+    pub fn land_boundaries_ref(&self) -> Option<&Vec<Vec<u32>>> {
+        self.land_boundaries.as_ref()
+    }
+
+    pub fn interior_boundaries_ref(&self) -> Option<&Vec<Vec<u32>>> {
+        self.interior_boundaries.as_ref()
     }
 
     pub fn get_full_string(&self) -> String {
@@ -296,15 +323,27 @@ fn proj_new_silent(definition: &str) -> Result<Proj, proj::ProjCreateError> {
 }
 
 fn get_proj_from_description(description: &str) -> Option<Proj> {
-    // Try full string first
+    // Fast path 1: Look for EPSG: pattern (most common case)
+    // This avoids expensive multi-pass parsing for typical gr3 files
+    for word in description.split_whitespace() {
+        let word_upper = word.to_uppercase();
+        if word_upper.starts_with("EPSG:") {
+            if let Ok(proj) = proj_new_silent(word) {
+                return Some(proj);
+            }
+        }
+    }
+
+    // Fast path 2: Try full string (common for pure PROJ definitions)
     if let Ok(proj) = proj_new_silent(description) {
         return Some(proj);
     }
 
+    // Slow path: multi-pass strategy for unusual CRS formats
     let words: Vec<&str> = description.split_whitespace().collect();
 
     // Try substrings from the beginning (CRS often at start)
-    // e.g. "EPSG:4326 !grd info:None" -> try "EPSG:4326", "EPSG:4326 !grd", etc.
+    // e.g. "+proj=longlat +datum=WGS84 !grd info:None"
     for end in 1..=words.len() {
         let substr = words[0..end].join(" ");
         if let Ok(proj) = proj_new_silent(&substr) {
@@ -312,18 +351,10 @@ fn get_proj_from_description(description: &str) -> Option<Proj> {
         }
     }
 
-    // Also try substrings from the end (CRS sometimes at end)
-    // e.g. "mesh description EPSG:4326" -> try "EPSG:4326", "description EPSG:4326", etc.
+    // Try substrings from the end (CRS sometimes at end)
     for start in 1..words.len() {
         let substr = words[start..].join(" ");
         if let Ok(proj) = proj_new_silent(&substr) {
-            return Some(proj);
-        }
-    }
-
-    // Try each individual word (handles cases like "EPSG:4326" as standalone)
-    for word in &words {
-        if let Ok(proj) = proj_new_silent(word) {
             return Some(proj);
         }
     }

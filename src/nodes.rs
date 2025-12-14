@@ -9,6 +9,7 @@ use std::sync::Arc;
 #[builder(setter(into))]
 pub struct Nodes {
     hash_map: LinkedHashMap<u32, (Vec<f64>, Option<Vec<f64>>)>,
+    #[builder(default)]
     crs: Option<Arc<Proj>>,
 }
 
