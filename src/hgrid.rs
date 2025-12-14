@@ -460,10 +460,11 @@ pub enum HgridTryFromError {
 impl TryFrom<&PathBuf> for Hgrid {
     type Error = HgridTryFromError;
     fn try_from(path: &PathBuf) -> Result<Self, Self::Error> {
-        let parsed_gr3 = gr3::parse_from_path_ref(&path).map_err(|e| {
+        let parsed_gr3 = gr3::parse_from_path_ref(path).map_err(|e| {
             HgridTryFromError::TryFromPathBufError(path.display().to_string(), e.to_string())
         })?;
-        Hgrid::try_from(&parsed_gr3)
+        // Use consuming TryFrom to avoid cloning
+        Hgrid::try_from(parsed_gr3)
     }
 }
 
@@ -473,73 +474,80 @@ impl TryFrom<&Url> for Hgrid {
     fn try_from(url: &Url) -> Result<Self, Self::Error> {
         let parsed_gr3 = gr3::parse_from_url(url)
             .map_err(|e| HgridTryFromError::TryFromUrlError(url.to_string(), e.to_string()))?;
-        Hgrid::try_from(&parsed_gr3)
+        // Use consuming TryFrom to avoid cloning
+        Hgrid::try_from(parsed_gr3)
     }
 }
 
-impl TryFrom<&Gr3ParserOutput> for Hgrid {
+/// Consuming conversion from Gr3ParserOutput to Hgrid
+/// This avoids cloning the large data structures by taking ownership.
+/// No validation is performed during construction - use `check_validity()` if needed.
+impl TryFrom<Gr3ParserOutput> for Hgrid {
     type Error = HgridTryFromError;
 
-    fn try_from(parsed_gr3: &Gr3ParserOutput) -> Result<Self, Self::Error> {
-        // Use nodes() directly - no reversal, keep positive-down convention from gr3 file
+    fn try_from(parsed_gr3: Gr3ParserOutput) -> Result<Self, Self::Error> {
+        // Destructure to take ownership of all fields
+        let Gr3ParserOutput {
+            description,
+            crs,
+            nodes: nodes_map,
+            elements: elements_map,
+            open_boundaries,
+            land_boundaries,
+            interior_boundaries,
+        } = parsed_gr3;
+
+        // Build nodes (no clone needed - we own the data)
         let nodes = NodesBuilder::default()
-            .hash_map(parsed_gr3.nodes())
-            .crs(parsed_gr3.crs())
+            .hash_map(nodes_map)
+            .crs(crs)
             .build()
             .map(Arc::new)?;
+
+        // Build elements
         let elements = ElementsBuilder::default()
             .nodes(nodes.clone())
-            .hash_map(
-                parsed_gr3
-                    .elements()
-                    .unwrap_or_else(|| LinkedHashMap::new()),
-            )
+            .hash_map(elements_map.unwrap_or_default())
             .build()?;
-        let description = parsed_gr3.description();
-        let is_open_boundary_present = parsed_gr3.open_boundaries().is_some()
-            && parsed_gr3
-                .open_boundaries()
-                .as_ref()
-                .map_or(false, |v| !v.is_empty());
-        let is_land_boundary_present = parsed_gr3.land_boundaries().is_some()
-            && parsed_gr3
-                .land_boundaries()
-                .as_ref()
-                .map_or(false, |v| !v.is_empty());
-        let is_interior_boundary_present = parsed_gr3.interior_boundaries().is_some()
-            && parsed_gr3
-                .interior_boundaries()
-                .as_ref()
-                .map_or(false, |v| !v.is_empty());
+
+        // Check boundary presence
+        let is_open_boundary_present = open_boundaries
+            .as_ref()
+            .map_or(false, |v| !v.is_empty());
+        let is_land_boundary_present = land_boundaries
+            .as_ref()
+            .map_or(false, |v| !v.is_empty());
+        let is_interior_boundary_present = interior_boundaries
+            .as_ref()
+            .map_or(false, |v| !v.is_empty());
+
         let boundaries =
             if is_open_boundary_present || is_land_boundary_present || is_interior_boundary_present
             {
                 let mut boundaries_builder = BoundariesBuilder::default();
+
                 if is_open_boundary_present {
-                    let mut open_boundary_builder = OpenBoundariesBuilder::default();
                     boundaries_builder.open(Some(
-                        open_boundary_builder
-                            .nodes_ids(parsed_gr3.open_boundaries().unwrap_or_else(Vec::new))
+                        OpenBoundariesBuilder::default()
+                            .nodes_ids(open_boundaries.unwrap_or_default())
                             .nodes(nodes.clone())
                             .build()?,
                     ));
                 }
 
                 if is_land_boundary_present {
-                    let mut land_boundary_builder = LandBoundariesBuilder::default();
                     boundaries_builder.land(Some(
-                        land_boundary_builder
-                            .nodes_ids(parsed_gr3.land_boundaries().unwrap_or_else(Vec::new))
+                        LandBoundariesBuilder::default()
+                            .nodes_ids(land_boundaries.unwrap_or_default())
                             .nodes(nodes.clone())
                             .build()?,
                     ));
                 }
 
                 if is_interior_boundary_present {
-                    let mut interior_boundary_builder = InteriorBoundariesBuilder::default();
                     boundaries_builder.interior(Some(
-                        interior_boundary_builder
-                            .nodes_ids(parsed_gr3.interior_boundaries().unwrap_or_else(Vec::new))
+                        InteriorBoundariesBuilder::default()
+                            .nodes_ids(interior_boundaries.unwrap_or_default())
                             .nodes(nodes.clone())
                             .build()?,
                     ));
