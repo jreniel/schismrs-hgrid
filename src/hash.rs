@@ -41,11 +41,9 @@ impl Hash for Hgrid {
             boundaries.hash(state);
         }
 
-        // Hash CRS if present
+        // Hash CRS if present (crs is now stored as a string)
         if let Some(crs) = self.crs() {
-            if let Some(definition) = &crs.proj_info().definition {
-                definition.hash(state);
-            }
+            crs.hash(state);
         }
     }
 }
@@ -94,11 +92,9 @@ impl Hgrid {
             }
         }
 
-        // Hash CRS if present
+        // Hash CRS if present (crs is now stored as a string)
         if let Some(crs) = self.crs() {
-            if let Some(definition) = &crs.proj_info().definition {
-                hasher.update(definition.as_bytes());
-            }
+            hasher.update(crs.as_bytes());
         }
 
         format!("{:x}", hasher.finalize())

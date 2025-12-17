@@ -3,14 +3,16 @@ use ndarray::prelude::*;
 use proj::Proj;
 // use std::collections::BTreeMap;
 use linked_hash_map::LinkedHashMap;
-use std::sync::Arc;
 
 #[derive(Builder, Debug, Clone)]
 #[builder(setter(into))]
 pub struct Nodes {
     hash_map: LinkedHashMap<u32, (Vec<f64>, Option<Vec<f64>>)>,
+    /// CRS definition string (e.g., "EPSG:4326", "EPSG:32618")
+    /// Stored as string to make Nodes Send + Sync safe.
+    /// Use `proj()` to create a Proj instance when needed.
     #[builder(default)]
-    crs: Option<Arc<Proj>>,
+    crs: Option<String>,
 }
 
 impl Nodes {
@@ -18,8 +20,16 @@ impl Nodes {
         &self.hash_map
     }
 
-    pub fn crs(&self) -> Option<Arc<Proj>> {
-        self.crs.clone()
+    /// Get the CRS definition string
+    pub fn crs(&self) -> Option<&str> {
+        self.crs.as_deref()
+    }
+
+    /// Create a Proj instance from the CRS definition string.
+    /// Returns None if no CRS is defined or if the CRS string is invalid.
+    /// Each call creates a new Proj instance (thread-safe).
+    pub fn proj(&self) -> Option<Proj> {
+        self.crs.as_ref().and_then(|crs_str| Proj::new(crs_str).ok())
     }
 
     // pub fn new(hash_maptree_map, crs }

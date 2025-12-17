@@ -158,7 +158,7 @@ impl Hgrid {
         // Rebuild the nodes with the new values
         let new_nodes_struct = NodesBuilder::default()
             .hash_map(new_nodes)
-            .crs(self.nodes.crs())
+            .crs(self.nodes.crs().map(|s| s.to_string()))
             .build()
             .expect("Failed to rebuild nodes after flip_depths");
 
@@ -172,8 +172,16 @@ impl Hgrid {
         self.nodes.xy()
     }
 
-    pub fn crs(&self) -> Option<Arc<Proj>> {
+    /// Get the CRS definition string (e.g., "EPSG:4326")
+    pub fn crs(&self) -> Option<&str> {
         self.nodes.crs()
+    }
+
+    /// Create a Proj instance from the CRS definition string.
+    /// Returns None if no CRS is defined or if the CRS string is invalid.
+    /// Each call creates a new Proj instance (thread-safe).
+    pub fn proj(&self) -> Option<Proj> {
+        self.nodes.proj()
     }
 
     pub fn write(&self, path: &Path) -> std::io::Result<()> {
@@ -198,7 +206,7 @@ impl Hgrid {
         };
         gr3_parser_output_builder.nodes(output_nodes);
         gr3_parser_output_builder.elements(self.elements.hash_map().clone());
-        gr3_parser_output_builder.crs(self.crs().clone());
+        gr3_parser_output_builder.crs(self.crs().map(|s| s.to_string()));
         if let Some(boundaries) = &self.boundaries {
             let the_type_map = boundaries.to_boundary_type_map();
             gr3_parser_output_builder.open_boundaries(the_type_map[&BoundaryType::Open].clone());
@@ -233,7 +241,7 @@ impl Hgrid {
     /// 1. The PROJ definition string for `+proj=longlat`
     /// 2. The ProjJSON representation for "GeographicCRS"
     pub fn is_geographic(&self) -> bool {
-        self.crs()
+        self.proj()
             .map(|proj| {
                 // First check proj_info definition
                 if let Some(def) = proj.proj_info().definition.as_ref() {
@@ -266,23 +274,12 @@ impl Hgrid {
             .unwrap_or(false)
     }
 
-    /// Get the CRS definition or description string if available
+    /// Get the CRS definition string if available
     ///
-    /// Returns the proj definition string if available, otherwise falls back to
-    /// the description (e.g., "WGS 84" for EPSG:4326).
+    /// Returns the CRS string as stored (e.g., "EPSG:4326").
+    /// This is the raw CRS identifier, not the expanded PROJ definition.
     pub fn crs_definition(&self) -> Option<String> {
-        self.crs()
-            .and_then(|proj| {
-                let info = proj.proj_info();
-                // Try definition first (contains full PROJ string)
-                if let Some(def) = info.definition.as_ref() {
-                    if !def.is_empty() {
-                        return Some(def.clone());
-                    }
-                }
-                // Fall back to description (e.g., "WGS 84" for EPSG codes)
-                info.description.clone()
-            })
+        self.crs().map(|s| s.to_string())
     }
 
     /// Compute the centroid of the mesh in lon/lat coordinates (EPSG:4326)
@@ -332,10 +329,6 @@ impl Hgrid {
         let transformer = Proj::new_known_crs(&src_def, dst_crs, None)
             .map_err(|e| HgridTryFromError::ProjError(e.to_string()))?;
 
-        // Create a Proj object for the destination CRS (for storing in the result)
-        let dst_proj = Proj::new(dst_crs)
-            .map_err(|e| HgridTryFromError::ProjError(e.to_string()))?;
-
         // Transform all node coordinates
         let mut new_nodes: LinkedHashMap<u32, (Vec<f64>, Option<Vec<f64>>)> = LinkedHashMap::new();
 
@@ -347,10 +340,10 @@ impl Hgrid {
             new_nodes.insert(*node_id, (vec![new_x, new_y], values.clone()));
         }
 
-        // Build new Nodes with transformed coordinates
+        // Build new Nodes with transformed coordinates (store CRS as string)
         let new_nodes_struct = NodesBuilder::default()
             .hash_map(new_nodes)
-            .crs(Some(Arc::new(dst_proj)))
+            .crs(Some(dst_crs.to_string()))
             .build()?;
 
         // Build new Hgrid with the same elements and boundaries but new nodes
@@ -611,12 +604,11 @@ mod tests {
             "Begin making nodes hash map took {:?} seconds.",
             start.elapsed()
         );
-        let transformer = Proj::new("epsg:4326").map(Arc::new).unwrap();
         log::info!("Begin making nodes struct.");
         let start = Instant::now();
         let nodes = NodesBuilder::default()
             .hash_map(nodes_hash_map)
-            .crs(transformer)
+            .crs(Some("EPSG:4326".to_string()))
             .build()
             .map(Arc::new)
             .unwrap();
@@ -726,7 +718,7 @@ mod tests {
 
         let nodes = NodesBuilder::default()
             .hash_map(nodes_hash_map)
-            .crs(None::<Arc<Proj>>)
+            .crs(None::<String>)
             .build()
             .map(Arc::new)
             .unwrap();
@@ -788,7 +780,7 @@ mod tests {
 
         let nodes = NodesBuilder::default()
             .hash_map(nodes_hash_map)
-            .crs(None::<Arc<Proj>>)
+            .crs(None::<String>)
             .build()
             .map(Arc::new)
             .unwrap();

@@ -304,7 +304,7 @@ mod tests {
 
         let nodes = NodesBuilder::default()
             .hash_map(nodes)
-            .crs(None::<std::sync::Arc<proj::Proj>>)
+            .crs(None::<String>)
             .build()
             .map(Arc::new)
             .unwrap();
@@ -346,7 +346,7 @@ mod tests {
 
         let nodes = NodesBuilder::default()
             .hash_map(nodes)
-            .crs(None::<std::sync::Arc<proj::Proj>>)
+            .crs(None::<String>)
             .build()
             .map(Arc::new)
             .unwrap();

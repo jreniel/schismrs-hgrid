@@ -6,7 +6,6 @@ use std::fmt;
 use std::fs::File;
 use std::io::{prelude::*, BufReader};
 use std::path::Path;
-use std::sync::Arc;
 use tempfile::Builder;
 use tempfile::NamedTempFile;
 use thiserror::Error;
@@ -17,8 +16,9 @@ use url::Url;
 pub struct Gr3ParserOutput {
     #[builder(default)]
     pub(crate) description: Option<String>,
+    /// CRS definition string (e.g., "EPSG:4326")
     #[builder(default)]
-    pub(crate) crs: Option<Arc<Proj>>,
+    pub(crate) crs: Option<String>,
     pub(crate) nodes: LinkedHashMap<u32, (Vec<f64>, Option<Vec<f64>>)>,
     #[builder(default)]
     pub(crate) elements: Option<LinkedHashMap<u32, Vec<u32>>>,
@@ -48,8 +48,15 @@ impl Gr3ParserOutput {
     pub fn elements(&self) -> Option<LinkedHashMap<u32, Vec<u32>>> {
         self.elements.clone()
     }
-    pub fn crs(&self) -> Option<Arc<Proj>> {
-        self.crs.clone()
+
+    /// Get the CRS definition string
+    pub fn crs(&self) -> Option<&str> {
+        self.crs.as_deref()
+    }
+
+    /// Create a Proj instance from the CRS definition string
+    pub fn proj(&self) -> Option<Proj> {
+        self.crs.as_ref().and_then(|crs_str| Proj::new(crs_str).ok())
     }
     pub fn description(&self) -> Option<String> {
         self.description.clone()
@@ -98,11 +105,7 @@ impl Gr3ParserOutput {
 impl fmt::Display for Gr3ParserOutput {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut lines = Vec::new();
-        let crs_str: String = self
-            .crs
-            .as_ref()
-            .map(|proj| proj.proj_info().definition.clone().unwrap_or_default())
-            .unwrap_or_default();
+        let crs_str: String = self.crs.clone().unwrap_or_default();
 
         let desc_str = self.description.as_ref().map_or("", String::as_str);
 
@@ -322,21 +325,23 @@ fn proj_new_silent(definition: &str) -> Result<Proj, proj::ProjCreateError> {
     Proj::new(definition)
 }
 
-fn get_proj_from_description(description: &str) -> Option<Proj> {
+/// Extract CRS definition string from description line.
+/// Returns the CRS string (e.g., "EPSG:4326") if found and valid.
+fn get_crs_from_description(description: &str) -> Option<String> {
     // Fast path 1: Look for EPSG: pattern (most common case)
     // This avoids expensive multi-pass parsing for typical gr3 files
     for word in description.split_whitespace() {
         let word_upper = word.to_uppercase();
         if word_upper.starts_with("EPSG:") {
-            if let Ok(proj) = proj_new_silent(word) {
-                return Some(proj);
+            if proj_new_silent(word).is_ok() {
+                return Some(word.to_string());
             }
         }
     }
 
     // Fast path 2: Try full string (common for pure PROJ definitions)
-    if let Ok(proj) = proj_new_silent(description) {
-        return Some(proj);
+    if proj_new_silent(description).is_ok() {
+        return Some(description.to_string());
     }
 
     // Slow path: multi-pass strategy for unusual CRS formats
@@ -346,16 +351,16 @@ fn get_proj_from_description(description: &str) -> Option<Proj> {
     // e.g. "+proj=longlat +datum=WGS84 !grd info:None"
     for end in 1..=words.len() {
         let substr = words[0..end].join(" ");
-        if let Ok(proj) = proj_new_silent(&substr) {
-            return Some(proj);
+        if proj_new_silent(&substr).is_ok() {
+            return Some(substr);
         }
     }
 
     // Try substrings from the end (CRS sometimes at end)
     for start in 1..words.len() {
         let substr = words[start..].join(" ");
-        if let Ok(proj) = proj_new_silent(&substr) {
-            return Some(proj);
+        if proj_new_silent(&substr).is_ok() {
+            return Some(substr);
         }
     }
 
@@ -426,7 +431,7 @@ pub fn parse_from_reader<R: Read>(
         None => return Err(Gr3ParserError::EmptyFile(fname.to_string())),
     };
     let description = get_description_without_proj(&description_raw_str);
-    let crs = get_proj_from_description(&description_raw_str).map(Arc::new);
+    let crs = get_crs_from_description(&description_raw_str);
     let line = match buf.next() {
         Some(Ok(line)) => line,
         Some(Err(e)) => {
@@ -1240,7 +1245,7 @@ mod tests_2dm {
             .description("Test mesh".to_string())
             .nodes(nodes)
             .elements(elements)
-            .crs(Some(Arc::new(Proj::new("epsg:6933").unwrap())))
+            .crs(Some("EPSG:6933".to_string()))
             .open_boundaries(None)
             .land_boundaries(None)
             .interior_boundaries(None)
@@ -1275,7 +1280,7 @@ mod tests_2dm {
             .description("Test mesh".to_string())
             .nodes(nodes)
             .elements(elements)
-            .crs(Some(Arc::new(Proj::new("epsg:6933").unwrap())))
+            .crs(Some("EPSG:6933".to_string()))
             .open_boundaries(None)
             .land_boundaries(None)
             .interior_boundaries(None)
@@ -1319,7 +1324,7 @@ mod tests_2dm {
             .description("Mixed element mesh".to_string())
             .nodes(nodes)
             .elements(elements)
-            .crs(Some(Arc::new(Proj::new("epsg:6933").unwrap())))
+            .crs(Some("EPSG:6933".to_string()))
             .open_boundaries(None)
             .land_boundaries(None)
             .interior_boundaries(None)
@@ -1360,27 +1365,29 @@ mod tests_proj_parsing {
     }
 
     #[test]
-    fn test_get_proj_from_description_crs_at_start() {
+    fn test_get_crs_from_description_crs_at_start() {
         // Test with CRS at the beginning of description
         let description = "EPSG:4326 !grd info:None";
-        let proj = get_proj_from_description(description);
-        assert!(proj.is_some(), "Should extract EPSG:4326 from description");
+        let crs = get_crs_from_description(description);
+        assert!(crs.is_some(), "Should extract EPSG:4326 from description");
+        assert_eq!(crs.unwrap(), "EPSG:4326");
     }
 
     #[test]
-    fn test_get_proj_from_description_crs_at_end() {
+    fn test_get_crs_from_description_crs_at_end() {
         // Test with CRS at the end of description
         let description = "mesh description EPSG:4326";
-        let proj = get_proj_from_description(description);
-        assert!(proj.is_some(), "Should extract EPSG:4326 from end of description");
+        let crs = get_crs_from_description(description);
+        assert!(crs.is_some(), "Should extract EPSG:4326 from end of description");
+        assert_eq!(crs.unwrap(), "EPSG:4326");
     }
 
     #[test]
-    fn test_get_proj_from_description_proj_string() {
+    fn test_get_crs_from_description_proj_string() {
         // Test with PROJ string
         let description = "+proj=longlat +datum=WGS84 +no_defs";
-        let proj = get_proj_from_description(description);
-        assert!(proj.is_some(), "Should parse PROJ string");
+        let crs = get_crs_from_description(description);
+        assert!(crs.is_some(), "Should parse PROJ string");
     }
 
     #[test]
