@@ -12,7 +12,7 @@ inpoly = "0.2.0"
 linked-hash-map = "0.5.6"
 log = "0.4.20"
 ndarray = "0.16"
-proj = { version = "0.30.0", features = ["network"] }
+proj = { version = "0.31.0", features = ["network"] }
 reqwest = { version = "0.11.23", features = ["blocking"] }
 sha2 = "0.10"
 tempfile = "3.9.0"
