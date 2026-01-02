@@ -234,44 +234,69 @@ impl Hgrid {
 
     /// Check if the CRS is geographic (lon/lat based, e.g., EPSG:4326)
     ///
-    /// Returns `true` if the CRS is geographic (uses angular units like degrees),
-    /// `false` if it's projected (uses linear units like meters) or if no CRS is defined.
+    /// Returns `true` if:
+    /// 1. The CRS is explicitly geographic (uses angular units like degrees)
+    /// 2. No CRS is defined but coordinates are within valid lon/lat ranges
+    ///
+    /// Returns `false` if it's projected (uses linear units like meters).
     ///
     /// Detection checks multiple sources:
     /// 1. The PROJ definition string for `+proj=longlat`
     /// 2. The ProjJSON representation for "GeographicCRS"
+    /// 3. Coordinate range inference when no CRS is defined
     pub fn is_geographic(&self) -> bool {
-        self.proj()
-            .map(|proj| {
-                // First check proj_info definition
-                if let Some(def) = proj.proj_info().definition.as_ref() {
-                    let def_lower = def.to_lowercase();
-                    if def_lower.contains("+proj=longlat") || def_lower.contains("proj=longlat") {
-                        return true;
-                    }
-                    if def_lower.contains("geographic") || def_lower.contains("geodetic") {
-                        return true;
-                    }
+        if let Some(proj) = self.proj() {
+            // First check proj_info definition
+            if let Some(def) = proj.proj_info().definition.as_ref() {
+                let def_lower = def.to_lowercase();
+                if def_lower.contains("+proj=longlat") || def_lower.contains("proj=longlat") {
+                    return true;
                 }
-
-                // Check the full definition via def()
-                if let Ok(full_def) = proj.def() {
-                    let def_lower = full_def.to_lowercase();
-                    if def_lower.contains("+proj=longlat") || def_lower.contains("proj=longlat") {
-                        return true;
-                    }
+                if def_lower.contains("geographic") || def_lower.contains("geodetic") {
+                    return true;
                 }
+            }
 
-                // Check ProjJSON for GeographicCRS - most reliable for EPSG codes
-                if let Ok(json) = proj.to_projjson(None, None, None) {
-                    if json.contains("GeographicCRS") {
-                        return true;
-                    }
+            // Check the full definition via def()
+            if let Ok(full_def) = proj.def() {
+                let def_lower = full_def.to_lowercase();
+                if def_lower.contains("+proj=longlat") || def_lower.contains("proj=longlat") {
+                    return true;
                 }
+            }
 
-                false
-            })
-            .unwrap_or(false)
+            // Check ProjJSON for GeographicCRS - most reliable for EPSG codes
+            if let Ok(json) = proj.to_projjson(None, None, None) {
+                if json.contains("GeographicCRS") {
+                    return true;
+                }
+            }
+
+            false
+        } else {
+            // No CRS defined - check if coordinates look like lon/lat
+            self.coords_look_geographic()
+        }
+    }
+
+    /// Check if coordinates appear to be in geographic (lon/lat) format.
+    ///
+    /// Returns `true` if x values are in [-180, 180] and y values are in [-90, 90].
+    /// This is a heuristic for grids without explicit CRS definitions.
+    fn coords_look_geographic(&self) -> bool {
+        let x = self.x();
+        let y = self.y();
+
+        if x.is_empty() || y.is_empty() {
+            return false;
+        }
+
+        let x_min = x.iter().cloned().fold(f64::INFINITY, f64::min);
+        let x_max = x.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        let y_min = y.iter().cloned().fold(f64::INFINITY, f64::min);
+        let y_max = y.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+
+        x_min >= -180.0 && x_max <= 180.0 && y_min >= -90.0 && y_max <= 90.0
     }
 
     /// Get the CRS definition string if available
